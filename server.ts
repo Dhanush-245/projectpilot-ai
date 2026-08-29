@@ -1,0 +1,804 @@
+import express, { Request, Response } from 'express';
+import path from 'path';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
+import { createServer as createViteServer } from 'vite';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// 1. Top-Level Request Deserialization (Ordering Guarantee)
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Gemini SDK initialization helper
+function getGeminiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured in server environment');
+  }
+  return new GoogleGenAI({ apiKey });
+}
+
+// Resilient Model Fallback Ladder
+const MODEL_FALLBACK_LADDER = [
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-pro-preview',
+  'gemini-3.6-flash',
+  'gemini-flash-latest',
+  'gemini-3.7-flash'
+];
+
+interface FallbackOptions {
+  prompt: string;
+  systemInstruction?: string;
+  responseSchema?: any;
+  responseMimeType?: string;
+  temperature?: number;
+  preferredModel?: string;
+  enableGoogleSearch?: boolean;
+}
+
+interface GenerateResult {
+  text: string;
+  modelUsed: string;
+  groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
+  webSearchQueries?: string[];
+}
+
+async function generateWithFallback(options: FallbackOptions): Promise<GenerateResult> {
+  const ai = getGeminiClient();
+  let lastError: any = null;
+
+  // Build model ladder prioritizing preferredModel if specified
+  const ladder: string[] = [];
+  if (options.preferredModel) {
+    ladder.push(options.preferredModel);
+  }
+  for (const m of MODEL_FALLBACK_LADDER) {
+    if (!ladder.includes(m)) {
+      ladder.push(m);
+    }
+  }
+
+  for (const model of ladder) {
+    try {
+      const config: any = {};
+      if (options.systemInstruction) {
+        config.systemInstruction = options.systemInstruction;
+      }
+      if (options.responseMimeType) {
+        config.responseMimeType = options.responseMimeType;
+      }
+      if (options.responseSchema) {
+        config.responseSchema = options.responseSchema;
+      }
+      if (typeof options.temperature === 'number') {
+        config.temperature = options.temperature;
+      }
+
+      // Enable Google Search Grounding tool when requested
+      if (options.enableGoogleSearch) {
+        config.tools = [{ googleSearch: {} }];
+      }
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: options.prompt,
+        config
+      });
+
+      if (response && response.text) {
+        // Extract search grounding metadata if available
+        let groundingSources: Array<{ title?: string; url?: string; snippet?: string }> | undefined;
+        let webSearchQueries: string[] | undefined;
+
+        const candidate = response.candidates?.[0];
+        const groundingMetadata = candidate?.groundingMetadata;
+
+        if (groundingMetadata) {
+          if (Array.isArray(groundingMetadata.webSearchQueries)) {
+            webSearchQueries = groundingMetadata.webSearchQueries;
+          }
+          if (Array.isArray(groundingMetadata.groundingChunks)) {
+            groundingSources = groundingMetadata.groundingChunks
+              .map((chunk: any) => {
+                if (chunk.web) {
+                  return {
+                    title: chunk.web.title || 'Web Reference',
+                    url: chunk.web.uri || '',
+                    snippet: ''
+                  };
+                }
+                return null;
+              })
+              .filter(Boolean) as any;
+          }
+        }
+
+        return {
+          text: response.text,
+          modelUsed: model,
+          groundingSources,
+          webSearchQueries
+        };
+      }
+    } catch (err: any) {
+      console.warn(`[Gemini Fallback] Model ${model} failed:`, err?.message || err);
+      lastError = err;
+      // If error was due to tools incompatibility on a specific model, continue to fallback
+    }
+  }
+
+  throw new Error(`All Gemini models in fallback ladder failed. Last error: ${lastError?.message || 'Unknown error'}`);
+}
+
+
+// ----------------------------------------------------
+// API ROUTES
+// ----------------------------------------------------
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'ProjectPilot AI Backend',
+    timestamp: new Date().toISOString(),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY)
+  });
+});
+
+// Endpoint: Analyze Project Idea & Generate Roadmap
+app.post('/api/gemini/analyze-project', async (req: Request, res: Response) => {
+  try {
+    const data = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { name, shortDescription, problemBeingSolved, targetUsers, techPreferences, constraints, deadline } = data;
+
+    if (!name || !shortDescription) {
+      return res.status(400).json({ error: 'Project name and description are required.' });
+    }
+
+    const systemInstruction = `You are ProjectPilot AI, an elite technical project architect and engineering strategist.
+Your mission is to transform user ideas into structured, production-ready project intelligence.
+Analyze the user's project concept with clarity, rigorous engineering thinking, and security-first principles.
+You MUST return a valid JSON object strictly matching the following schema with camelCase keys:
+{
+  "problemDefinition": "string detailing the core problem being solved",
+  "targetUsers": ["array", "of", "user personas with roles/needs"],
+  "proposedSolution": "string detailing the technical architecture and engineering approach",
+  "keyObjectives": ["array of measurable goals"],
+  "functionalRequirements": ["array of core features/capabilities"],
+  "nonFunctionalRequirements": ["array of performance, scalability, security, availability requirements"],
+  "suggestedTechStack": {
+    "frontend": "string",
+    "backend": "string",
+    "database": "string",
+    "aiMl": "string",
+    "hosting": "string",
+    "other": ["string"]
+  },
+  "dataRequirements": ["array of data entities, storage models, and schemas"],
+  "aiConsiderations": "string detailing AI/ML model choice, zero-leakage key isolation, prompt safety, and fallback strategy",
+  "majorRisks": [
+    { "risk": "string", "severity": "HIGH|MEDIUM|LOW", "mitigation": "string" }
+  ],
+  "securityConsiderations": ["array of OWASP, access control, secrets, and auth practices"],
+  "estimatedComplexity": "LOW|MEDIUM|HIGH|VERY_HIGH",
+  "recommendedPhases": ["Phase 1: ...", "Phase 2: ...", "Phase 3: ...", "Phase 4: ...", "Phase 5: ..."],
+  "suggestedFirstActions": ["Immediate Action 1", "Immediate Action 2", "Immediate Action 3"],
+  "roadmapTasks": [
+    {
+      "title": "string",
+      "description": "string",
+      "phase": "string matching one of recommendedPhases",
+      "priority": "HIGH|MEDIUM|LOW",
+      "status": "TODO"
+    }
+  ]
+}
+Do not output markdown code fences outside JSON.`;
+
+    const prompt = `Analyze this project idea and produce a comprehensive project plan and initial roadmap tasks:
+Project Name: ${name}
+Description: ${shortDescription}
+Problem Being Solved: ${problemBeingSolved || 'Not specified'}
+Target Users: ${targetUsers || 'Not specified'}
+Tech Preferences: ${techPreferences || 'Standard modern stack'}
+Constraints: ${constraints || 'None specified'}
+Target Deadline: ${deadline || 'Flexible'}
+
+Provide thorough, high-quality engineering analysis for all fields in the JSON schema.`;
+
+    const result = await generateWithFallback({
+      prompt,
+      systemInstruction,
+      preferredModel: 'gemini-3.5-flash',
+      responseMimeType: 'application/json',
+      temperature: 0.2
+    });
+
+    const rawJson = result.text;
+    let parsedResult: any;
+    try {
+      parsedResult = JSON.parse(rawJson);
+    } catch (parseError) {
+      // Fallback cleanup if model wrapped in markdown
+      const cleaned = rawJson.replace(/^```json/g, '').replace(/```$/g, '').trim();
+      parsedResult = JSON.parse(cleaned);
+    }
+
+    const toStr = (val: any): string => {
+      if (typeof val === 'string') return val.trim();
+      if (Array.isArray(val)) {
+        return val.map((v) => (typeof v === 'string' ? v.trim() : (v ? String(v).trim() : ''))).filter(Boolean).join('\n\n');
+      }
+      if (val && typeof val === 'object') {
+        return Object.entries(val).map(([k, v]) => `${k}: ${v}`).join('\n');
+      }
+      return '';
+    };
+
+    const toStrArray = (val: any): string[] => {
+      if (Array.isArray(val)) {
+        return val.map((item) => {
+          if (typeof item === 'string') return item.trim();
+          if (item && typeof item === 'object') {
+            if (item.title && item.description) return `${item.title}: ${item.description}`;
+            if (item.name && item.description) return `${item.name}: ${item.description}`;
+            if (item.feature) return `${item.feature}${item.description ? `: ${item.description}` : ''}`;
+            if (item.requirement) return `${item.requirement}${item.description ? `: ${item.description}` : ''}`;
+            if (item.objective) return `${item.objective}${item.description ? `: ${item.description}` : ''}`;
+            if (item.action) return `${item.action}${item.description ? `: ${item.description}` : ''}`;
+            return Object.entries(item).map(([k, v]) => `${k}: ${v}`).join(' — ');
+          }
+          return item ? String(item).trim() : '';
+        }).filter(Boolean);
+      }
+      if (typeof val === 'string' && val.trim().length > 0) {
+        if (val.includes('\n')) return val.split('\n').map(s => s.replace(/^[-*•0-9.)\s]+/, '').trim()).filter(Boolean);
+        if (val.includes(';') || val.includes('•')) return val.split(/[;•]/).map(s => s.trim()).filter(Boolean);
+        return [val.trim()];
+      }
+      if (val && typeof val === 'object') {
+        return Object.entries(val).map(([k, v]) => `${k}: ${v}`).filter(Boolean);
+      }
+      return [];
+    };
+
+    const raw = (parsedResult && typeof parsedResult === 'object') ? parsedResult : {};
+
+    // 1. Problem Definition
+    const problemDefinition = toStr(
+      raw.problemDefinition ||
+      raw.problem_definition ||
+      raw.problem ||
+      raw.problemStatement ||
+      raw.problem_statement ||
+      problemBeingSolved ||
+      shortDescription ||
+      'Problem definition to be addressed by the technical implementation.'
+    );
+
+    // 2. Proposed Solution
+    const proposedSolution = toStr(
+      raw.proposedSolution ||
+      raw.proposed_solution ||
+      raw.solution ||
+      raw.technicalSolution ||
+      raw.technical_solution ||
+      raw.architectureOverview ||
+      raw.architecture_overview ||
+      raw.systemArchitecture ||
+      raw.system_architecture ||
+      shortDescription ||
+      'Modular technical architecture designed with security-first principles, scalability, and robust state management.'
+    );
+
+    // 3. Target Users
+    const targetUsersList = toStrArray(
+      raw.targetUsers ||
+      raw.target_users ||
+      raw.target_user_personas ||
+      raw.userPersonas ||
+      raw.user_personas ||
+      raw.users ||
+      raw.personas ||
+      targetUsers
+    );
+
+    // 4. Key Objectives
+    const keyObjectives = toStrArray(
+      raw.keyObjectives ||
+      raw.key_objectives ||
+      raw.objectives ||
+      raw.measurableObjectives ||
+      raw.measurable_objectives ||
+      raw.goals
+    );
+
+    // 5. Functional Requirements
+    const functionalRequirements = toStrArray(
+      raw.functionalRequirements ||
+      raw.functional_requirements ||
+      raw.features ||
+      raw.coreFeatures ||
+      raw.core_features ||
+      raw.functional_requirements_list
+    );
+
+    // 6. Non-Functional Requirements
+    const nonFunctionalRequirements = toStrArray(
+      raw.nonFunctionalRequirements ||
+      raw.non_functional_requirements ||
+      raw.nonFunctional ||
+      raw.nfrs ||
+      raw.systemRequirements
+    );
+
+    // 7. Tech Stack
+    const techStackRaw = raw.suggestedTechStack || raw.suggested_tech_stack || raw.techStack || raw.tech_stack || raw.technologyStack || raw.stack || {};
+    const suggestedTechStack = {
+      frontend: techStackRaw.frontend || techStackRaw.front_end || techStackRaw.client || techStackRaw.ui || 'React + TypeScript',
+      backend: techStackRaw.backend || techStackRaw.back_end || techStackRaw.server || techStackRaw.api || 'Node.js Express / Cloud Run',
+      database: techStackRaw.database || techStackRaw.data_store || techStackRaw.storage || techStackRaw.db || 'Cloud Firestore',
+      aiMl: techStackRaw.aiMl || techStackRaw.ai_ml || techStackRaw.ai || techStackRaw.ml || techStackRaw.llm || 'Gemini 3.5 Flash',
+      hosting: techStackRaw.hosting || techStackRaw.deployment || techStackRaw.cloud || 'Google Cloud Run',
+      other: toStrArray(techStackRaw.other || techStackRaw.tools || techStackRaw.libraries)
+    };
+
+    // 8. Data Requirements
+    const dataRequirements = toStrArray(
+      raw.dataRequirements ||
+      raw.data_requirements ||
+      raw.data ||
+      raw.dataModel ||
+      raw.data_model ||
+      raw.dataModels ||
+      raw.data_models ||
+      raw.schema ||
+      raw.storageRequirements
+    );
+
+    // 9. AI Considerations
+    const aiConsiderations = toStr(
+      raw.aiConsiderations ||
+      raw.ai_considerations ||
+      raw.aiMlConsiderations ||
+      raw.ai_ml_considerations ||
+      raw.aiMl ||
+      raw.ai_ml ||
+      raw.ai ||
+      raw.llmConsiderations ||
+      'Zero client-side API key leakage, server-side proxying with model fallback ladder resilience, and token usage optimization.'
+    );
+
+    // 10. Major Risks
+    const risksRaw = raw.majorRisks || raw.major_risks || raw.risks || raw.riskMatrix || raw.risk_matrix || [];
+    let majorRisks: Array<{ risk: string; severity: 'LOW' | 'MEDIUM' | 'HIGH'; mitigation: string }> = [];
+    if (Array.isArray(risksRaw)) {
+      majorRisks = risksRaw.map((item: any, idx: number) => {
+        if (item && typeof item === 'object') {
+          const sevStr = String(item.severity || item.level || 'MEDIUM').toUpperCase();
+          const severity: 'LOW' | 'MEDIUM' | 'HIGH' = ['LOW', 'MEDIUM', 'HIGH'].includes(sevStr)
+            ? (sevStr as 'LOW' | 'MEDIUM' | 'HIGH')
+            : 'MEDIUM';
+          return {
+            risk: item.risk || item.title || item.name || `Risk Factor ${idx + 1}`,
+            severity,
+            mitigation: item.mitigation || item.solution || item.action || 'Implement defensive validation and monitoring.'
+          };
+        }
+        return {
+          risk: String(item),
+          severity: 'MEDIUM',
+          mitigation: 'Implement defensive validation and monitoring.'
+        };
+      });
+    }
+
+    // 11. Security Considerations
+    const securityConsiderations = toStrArray(
+      raw.securityConsiderations ||
+      raw.security_considerations ||
+      raw.security ||
+      raw.securityAndPrivacy ||
+      raw.security_and_privacy ||
+      raw.owasp
+    );
+
+    // 12. Estimated Complexity
+    const compStr = String(raw.estimatedComplexity || raw.estimated_complexity || raw.complexity || 'MEDIUM').toUpperCase();
+    const estimatedComplexity = ['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'].includes(compStr) ? compStr : 'MEDIUM';
+
+    // 13. Recommended Phases
+    const recommendedPhases = toStrArray(
+      raw.recommendedPhases ||
+      raw.recommended_phases ||
+      raw.phases ||
+      raw.developmentPhases ||
+      raw.development_phases
+    );
+
+    // 14. Suggested First Actions
+    const suggestedFirstActions = toStrArray(
+      raw.suggestedFirstActions ||
+      raw.suggested_first_actions ||
+      raw.suggestedImmediateActions ||
+      raw.suggested_immediate_actions ||
+      raw.immediateActions ||
+      raw.immediate_actions ||
+      raw.firstActions ||
+      raw.first_actions ||
+      raw.actionItems ||
+      raw.nextSteps
+    );
+
+    // 15. Roadmap Tasks
+    const tasksRaw = raw.roadmapTasks || raw.roadmap_tasks || raw.tasks || raw.initialTasks || raw.initial_roadmap || [];
+    const roadmapTasks = Array.isArray(tasksRaw)
+      ? tasksRaw.map((t: any, i: number) => ({
+          title: t.title || t.name || `Milestone Task ${i + 1}`,
+          description: t.description || '',
+          phase: t.phase || recommendedPhases[0] || 'Phase 1: Research & Feasibility',
+          priority: (['LOW', 'MEDIUM', 'HIGH'].includes(String(t.priority || '').toUpperCase()) ? String(t.priority).toUpperCase() : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+          status: 'TODO' as const
+        }))
+      : [];
+
+    const normalizedResult = {
+      problemDefinition: problemDefinition || 'Problem definition to be addressed by the technical implementation.',
+      targetUsers: targetUsersList.length > 0 ? targetUsersList : ['Software Developers', 'Engineering Teams'],
+      proposedSolution: proposedSolution || 'Modular technical architecture designed with security-first principles.',
+      keyObjectives: keyObjectives.length > 0 ? keyObjectives : ['Deliver reliable core capabilities', 'Enforce zero-trust security and data privacy'],
+      functionalRequirements: functionalRequirements.length > 0 ? functionalRequirements : ['Interactive user management', 'Real-time state persistence'],
+      nonFunctionalRequirements: nonFunctionalRequirements.length > 0 ? nonFunctionalRequirements : ['Sub-500ms API response time', 'OWASP Top 10 compliance'],
+      suggestedTechStack,
+      dataRequirements: dataRequirements.length > 0 ? dataRequirements : ['User auth credentials', 'Project and roadmap task collections'],
+      aiConsiderations,
+      majorRisks: majorRisks.length > 0 ? majorRisks : [
+        {
+          risk: 'External Service Availability & Rate Limiting',
+          severity: 'MEDIUM' as const,
+          mitigation: 'Implement tiered model fallback ladder and exponential backoff retry policies.'
+        }
+      ],
+      securityConsiderations: securityConsiderations.length > 0 ? securityConsiderations : [
+        'Owner-bound Firestore security rules (request.auth.uid == userId)',
+        'Server-side Gemini API key isolation',
+        'Input validation & indirect prompt injection defense'
+      ],
+      estimatedComplexity,
+      recommendedPhases: recommendedPhases.length > 0 ? recommendedPhases : [
+        'Phase 1: Research & Feasibility',
+        'Phase 2: Architecture & Foundation',
+        'Phase 3: Core MVP Implementation',
+        'Phase 4: Security Hardening & Testing',
+        'Phase 5: Production Deployment'
+      ],
+      suggestedFirstActions: suggestedFirstActions.length > 0 ? suggestedFirstActions : [
+        'Review system architecture and establish repository structure',
+        'Configure database security rules and environment variables',
+        'Implement primary user workflow and verify end-to-end data flow'
+      ],
+      roadmapTasks
+    };
+
+    res.json({ success: true, data: normalizedResult });
+  } catch (error: any) {
+    console.error('Error in analyze-project endpoint:', error);
+    res.status(500).json({
+      error: error?.message || 'Failed to analyze project idea with Gemini'
+    });
+  }
+});
+
+// Helper: Build Role-Specific System Instruction
+function getRoleSystemInstruction(role: string = 'TECH_LEAD', enableGrounding: boolean = false): string {
+  let rolePersona = '';
+  switch (role) {
+    case 'ARCHITECT':
+      rolePersona = `You are the Lead Systems Architect for ProjectPilot AI.
+Your specialization: High-level system design, distributed architectures, database schemas, API boundaries, scalability, failure domains, and Architectural Decision Records (ADRs).`;
+      break;
+    case 'SECURITY':
+      rolePersona = `You are the Principal Security & Compliance Officer for ProjectPilot AI.
+Your specialization: Threat modeling, OWASP Top 10 defenses, Firebase security rules isolation, OAuth token hygiene, Secret Manager workflows, zero-trust backend practices, and data sanitation.`;
+      break;
+    case 'FULLSTACK_DEV':
+      rolePersona = `You are a Senior Full-Stack Engineer for ProjectPilot AI.
+Your specialization: Practical implementation details, clean TypeScript/React patterns, Express server design, performance optimizations, state synchronization, and debugging.`;
+      break;
+    case 'TECH_LEAD':
+    default:
+      rolePersona = `You are the Engineering Tech Lead & Project Co-Pilot for ProjectPilot AI.
+Your specialization: Holistic engineering leadership, sprint velocity, technical trade-offs, risk management, roadmap prioritization, and team guidance.`;
+      break;
+  }
+
+  return `${rolePersona}
+You have access to the user's live project workspace memory: metadata, roadmap tasks, notes, architectural decisions (ADRs), and technical experiments.
+
+Guidelines:
+1. Ground your answers directly in the provided project context.
+2. ${enableGrounding ? 'You have access to real-time Google Search data. Use web citations when researching modern libraries, benchmark comparisons, current best practices, or external ecosystem docs.' : 'Be direct, authoritative, and concise.'}
+3. If information is not in the project context or cannot be reasonably inferred, explicitly state that rather than fabricating facts.
+4. Format your responses with structured markdown (bullet points, bold tags, code snippets) for high readability.
+5. Emphasize maintainability, testing rigor, and production-grade stability.`;
+}
+
+// Endpoint: Project-Aware Multi-Turn Gemini Assistant Chat
+app.post('/api/gemini/chat', async (req: Request, res: Response) => {
+  try {
+    const data = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { projectContext, conversationHistory, message, role = 'TECH_LEAD', speed = 'GENERAL', useSearch = false } = data;
+
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Map speed mode to appropriate Gemini model tier
+    // Fast: gemini-3.1-flash-lite
+    // General: gemini-3.5-flash
+    // Deep Reasoning / Complex: gemini-3.1-pro-preview
+    let preferredModel = 'gemini-3.5-flash';
+    if (speed === 'FAST') {
+      preferredModel = 'gemini-3.1-flash-lite';
+    } else if (speed === 'DEEP_REASONING') {
+      preferredModel = 'gemini-3.1-pro-preview';
+    }
+
+    const systemInstruction = getRoleSystemInstruction(role, Boolean(useSearch));
+
+    const contextSummary = `
+=== PROJECT CONTEXT ===
+Project Name: ${projectContext?.name || 'Untitled Project'}
+Description: ${projectContext?.shortDescription || 'None'}
+Problem: ${projectContext?.problemBeingSolved || 'Not specified'}
+Current Phase: ${projectContext?.currentPhase || 'Phase 1'}
+Tech Stack: ${JSON.stringify(projectContext?.analysis?.suggestedTechStack || {})}
+Objectives: ${JSON.stringify(projectContext?.analysis?.keyObjectives || [])}
+
+Tasks Summary:
+- Total Tasks: ${projectContext?.tasksSummary?.total || 0}
+- Completed: ${projectContext?.tasksSummary?.completed || 0}
+- In Progress: ${projectContext?.tasksSummary?.inProgress || 0}
+- Todo: ${projectContext?.tasksSummary?.todo || 0}
+- High Priority Pending: ${JSON.stringify(projectContext?.tasksSummary?.highPriorityPending || [])}
+
+Recent Notes:
+${(projectContext?.recentNotes || []).map((n: any) => `- [${n.title}]: ${n.content}`).join('\n')}
+
+Architectural Decisions:
+${(projectContext?.decisions || []).map((d: any) => `- [Decision: ${d.decision}] (Reasoning: ${d.reasoning}) [Status: ${d.status}]`).join('\n')}
+
+Experiments & Hypotheses:
+${(projectContext?.experiments || []).map((e: any) => `- [${e.name}] Hypothesis: ${e.hypothesis} | Result: ${e.result || 'Pending'}`).join('\n')}
+=== END PROJECT CONTEXT ===
+`;
+
+    const formattedHistory = (Array.isArray(conversationHistory) ? conversationHistory : [])
+      .slice(-10)
+      .map((msg: any) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+      .join('\n\n');
+
+    const prompt = `${contextSummary}
+
+${formattedHistory ? `=== CONVERSATION HISTORY ===\n${formattedHistory}\n=== END HISTORY ===\n` : ''}
+User Question: ${message}
+
+Provide a helpful, direct, and project-grounded response.`;
+
+    const result = await generateWithFallback({
+      prompt,
+      systemInstruction,
+      preferredModel,
+      enableGoogleSearch: Boolean(useSearch),
+      temperature: 0.3
+    });
+
+    res.json({
+      success: true,
+      reply: result.text,
+      modelUsed: result.modelUsed,
+      groundingSources: result.groundingSources || [],
+      webSearchQueries: result.webSearchQueries || []
+    });
+  } catch (error: any) {
+    console.error('Error in chat endpoint:', error);
+    res.status(500).json({
+      error: error?.message || 'Failed to process chat message with Gemini'
+    });
+  }
+});
+
+// Endpoint: Live Google Search Research Grounding (gemini-3.5-flash with googleSearch tool)
+app.post('/api/gemini/research', async (req: Request, res: Response) => {
+  try {
+    const data = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { query, projectContext } = data;
+
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Research query is required' });
+    }
+
+    const systemInstruction = `You are ProjectPilot Market & Tech Research Specialist.
+You have access to live Google Search data. Your role is to perform up-to-date technical research, find the latest library versions, architectural benchmarks, security advisories, and industry comparisons.
+Ground your response with clear, actionable insights, pros and cons, and technical recommendations for the project.`;
+
+    const prompt = `Project: ${projectContext?.name || 'General Engineering'}
+Tech Stack Context: ${JSON.stringify(projectContext?.analysis?.suggestedTechStack || {})}
+
+Research Topic/Question:
+${query}
+
+Provide a comprehensive, up-to-date research brief using Google Search grounding. Include:
+1. Executive Summary & Latest State of the Art
+2. Technical Comparison / Key Findings
+3. Concrete Recommendations for this project
+4. Potential Trade-offs or Gotchas`;
+
+    const result = await generateWithFallback({
+      prompt,
+      systemInstruction,
+      preferredModel: 'gemini-3.5-flash',
+      enableGoogleSearch: true,
+      temperature: 0.2
+    });
+
+    res.json({
+      success: true,
+      summary: result.text,
+      modelUsed: result.modelUsed,
+      groundingSources: result.groundingSources || [],
+      webSearchQueries: result.webSearchQueries || []
+    });
+  } catch (error: any) {
+    console.error('Error in research endpoint:', error);
+    res.status(500).json({
+      error: error?.message || 'Failed to perform grounded research with Google Search'
+    });
+  }
+});
+
+// Endpoint: AI-Assisted Project Health Assessment
+app.post('/api/gemini/health-assessment', async (req: Request, res: Response) => {
+  try {
+    const data = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { project, tasks, notes, decisions, experiments } = data;
+
+    if (!project) {
+      return res.status(400).json({ error: 'Project data is required for health assessment.' });
+    }
+
+    const taskList = Array.isArray(tasks) ? tasks : [];
+    const completedTasks = taskList.filter((t: any) => t.status === 'COMPLETED');
+    const inProgressTasks = taskList.filter((t: any) => t.status === 'IN_PROGRESS');
+    const todoTasks = taskList.filter((t: any) => t.status === 'TODO');
+    const highPriorityIncomplete = taskList.filter((t: any) => t.priority === 'HIGH' && t.status !== 'COMPLETED');
+
+    const systemInstruction = `You are ProjectPilot AI Health Evaluator. You provide an objective, constructive evaluation of project health based on real project data.
+Evaluate across 6 domains:
+1. Progress (Task completion velocity, blockers)
+2. Documentation (Notes quality, clear specifications)
+3. Testing (Testing tasks defined, test strategy)
+4. Security (Security considerations, auth, secret hygiene)
+5. Architecture (Design clarity, ADRs recorded)
+6. Deployment Readiness (CI/CD, environment configs, Cloud Run readiness)
+
+For each area assign status: "GOOD", "PARTIAL", or "NEEDS_ATTENTION", with a 1-2 sentence explanation and 2 actionable recommendations.
+Provide an overall status ("GOOD", "PARTIAL", "NEEDS_ATTENTION"), an overall health score (0-100), an overall summary, and top 3 key action items.
+Return strictly a valid JSON object.`;
+
+    const prompt = `Evaluate the health of this project based on current metrics:
+Project: ${project.name}
+Description: ${project.shortDescription}
+Current Phase: ${project.currentPhase || 'Not set'}
+Deadline: ${project.deadline || 'None'}
+
+Current Metrics:
+- Total Tasks: ${taskList.length}
+- Completed Tasks: ${completedTasks.length}
+- In Progress Tasks: ${inProgressTasks.length}
+- Todo Tasks: ${todoTasks.length}
+- High Priority Incomplete: ${highPriorityIncomplete.map((t: any) => t.title).join(', ') || 'None'}
+- Notes Recorded: ${Array.isArray(notes) ? notes.length : 0}
+- Decisions Recorded: ${Array.isArray(decisions) ? decisions.length : 0}
+- Experiments Recorded: ${Array.isArray(experiments) ? experiments.length : 0}
+
+Generate the full project health review JSON.`;
+
+    const result = await generateWithFallback({
+      prompt,
+      systemInstruction,
+      preferredModel: 'gemini-3.5-flash',
+      responseMimeType: 'application/json',
+      temperature: 0.2
+    });
+
+    const rawJson = result.text;
+    let review;
+    try {
+      review = JSON.parse(rawJson);
+    } catch {
+      const cleaned = rawJson.replace(/^```json/g, '').replace(/```$/g, '').trim();
+      review = JSON.parse(cleaned);
+    }
+
+    res.json({ success: true, data: review });
+  } catch (error: any) {
+    console.error('Error in health-assessment endpoint:', error);
+    res.status(500).json({
+      error: error?.message || 'Failed to generate health assessment'
+    });
+  }
+});
+
+// Endpoint: Dynamic Task Suggestions
+app.post('/api/gemini/suggest-tasks', async (req: Request, res: Response) => {
+  try {
+    const data = (req.body && typeof req.body === 'object') ? req.body : {};
+    const { projectName, phase, objective, existingTasks } = data;
+
+    const systemInstruction = `You are a project planning assistant. Suggest 3-5 concise, high-impact tasks for the specified phase/objective. Return a JSON array of tasks with { title, description, priority: "LOW"|"MEDIUM"|"HIGH", phase }.`;
+
+    const prompt = `Project: ${projectName || 'Current Project'}
+Phase: ${phase || 'General'}
+Objective: ${objective || 'Accelerate progress'}
+Existing tasks: ${(existingTasks || []).map((t: any) => t.title).join(', ')}
+
+Return a JSON array of suggested tasks.`;
+
+    const result = await generateWithFallback({
+      prompt,
+      systemInstruction,
+      preferredModel: 'gemini-3.1-flash-lite',
+      responseMimeType: 'application/json',
+      temperature: 0.3
+    });
+
+    const rawJson = result.text;
+    let tasks;
+    try {
+      tasks = JSON.parse(rawJson);
+    } catch {
+      const cleaned = rawJson.replace(/^```json/g, '').replace(/```$/g, '').trim();
+      tasks = JSON.parse(cleaned);
+    }
+
+    res.json({ success: true, tasks: Array.isArray(tasks) ? tasks : (tasks.tasks || []) });
+  } catch (error: any) {
+    console.error('Error in suggest-tasks endpoint:', error);
+    res.status(500).json({ error: error?.message || 'Failed to suggest tasks' });
+  }
+});
+
+
+// ----------------------------------------------------
+// VITE / STATIC SERVING
+// ----------------------------------------------------
+
+async function startServer() {
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[ProjectPilot AI] Server running on http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+});

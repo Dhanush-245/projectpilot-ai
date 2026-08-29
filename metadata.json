@@ -1,0 +1,6 @@
+{
+  "name": "ProjectPilot AI",
+  "description": "Turn ideas into intelligent, actionable projects.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
