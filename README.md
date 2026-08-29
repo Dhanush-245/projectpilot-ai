@@ -14,7 +14,7 @@ While traditional AI tools offer disconnected chat dialogues or simple personal 
 2. **AI System Architecture & Specification**: Gemini architects functional & non-functional requirements, recommended tech stacks, data models, and a technical risk matrix.
 3. **Phase-Based Execution Roadmap**: Interactive Kanban & phase views with automatic milestone generation and Gemini-powered task suggestions.
 4. **Context-Grounded Project Co-Pilot with Role Personas**: Multi-turn AI assistant with specialized personas (Tech Lead, Architect, Security Officer, Full-Stack Dev), model speed switcher, and live Google Search Grounding.
-5. **Live Tech & Market Research Grounding**: Real-time Google Search integration (`gemini-3.5-flash` + `googleSearch` tool) to ground technical benchmarks, library documentation, security advisories, and web source citations.
+5. **Live Tech & Market Research Grounding**: Real-time Gemini Google Search grounding to synthesize technical documentation, security advisories, and source citations.
 6. **Project Memory (ADRs & Research Notes)**: Document technical tradeoffs and decisions that persist into AI context for long-term consistency.
 7. **Live Project Health & Diagnostics**: Gemini audits project momentum, flags unmitigated risks, and creates 1-click corrective action items.
 8. **Portable Markdown & JSON Export**: Full project export capabilities allowing developers to export their complete roadmap, notes, ADRs, and architecture as a portable Markdown document or JSON archive.
@@ -117,10 +117,34 @@ Cloud Run instances.
 
 ### Gemini models requiring deployment-time verification
 
-The source currently references `gemini-3.5-flash`, `gemini-3.1-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.6-flash`, `gemini-flash-latest`, and
-`gemini-3.7-flash`. Availability was not changed in this remediation phase;
-verify each identifier in the target Google AI project before deployment.
+The server uses `GEMINI_MODEL`, defaulting to the official SDK quickstart model
+`gemini-2.5-flash`. Optional `GEMINI_FALLBACK_MODELS` values are used only when
+an operator explicitly supplies comma-separated model IDs verified for the same
+Gemini Developer API key and project. The application no longer guesses future
+model names in source code.
+
+`VITE_FIREBASE_MEASUREMENT_ID` remains optional in local configuration, but is
+not passed through the production Docker build because Firebase Analytics is
+not initialized by this application. Add it to both Docker and Cloud Build only
+if Analytics is intentionally introduced.
+
+### Reproducible Cloud Build
+
+`cloudbuild.yaml` runs `npm ci`, typechecking, and tests before building and
+pushing the configured image. The known non-secret Firebase web identifiers
+have project defaults. Supply the public Firebase Web API key explicitly:
+
+```bash
+gcloud builds submit . \
+  --config=cloudbuild.yaml \
+  --project=gen-lang-client-0616895579 \
+  --region=asia-southeast1 \
+  --substitutions=_VITE_FIREBASE_API_KEY="YOUR_PUBLIC_FIREBASE_WEB_API_KEY"
+```
+
+The build fails before Vite compilation if a required Firebase build argument
+is absent. Never add `GEMINI_API_KEY` to Cloud Build substitutions or Docker
+build arguments.
 
 ### 1. Prerequisites & GCP APIs Setup
 Ensure you have the Google Cloud SDK (`gcloud`) installed and configured:

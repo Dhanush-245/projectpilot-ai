@@ -8,7 +8,7 @@ export interface FirebaseWebConfigEnv {
   VITE_FIREBASE_MEASUREMENT_ID?: string;
 }
 
-export function buildFirebaseWebConfig(env: FirebaseWebConfigEnv) {
+export function buildFirebaseWebConfig(env: FirebaseWebConfigEnv = {}) {
   const config = {
     apiKey: env.VITE_FIREBASE_API_KEY,
     authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,

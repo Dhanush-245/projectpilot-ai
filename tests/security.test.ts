@@ -7,7 +7,15 @@ import { normalizeProjectAnalysis } from '../src/utils/normalizeAnalysis';
 import { normalizeHealthReview, parseGeminiJson } from '../src/utils/normalizeHealthReview';
 import { generateProjectMarkdown } from '../src/utils/markdownExporter';
 import { safeGroundingSources } from '../src/utils/grounding';
-import { isRecord, validRecordArray, validString } from '../server';
+import {
+  classifyGeminiError,
+  configuredGeminiModels,
+  getGeminiApiKey,
+  isRecord,
+  validateChatRequest,
+  validRecordArray,
+  validString,
+} from '../server';
 
 function responseRecorder() {
   const state: { status?: number; body?: unknown; headers: Record<string, unknown> } = { headers: {} };
@@ -91,7 +99,7 @@ test('all Gemini routes require auth, rate limiting, and validation', async () =
   for (const route of routes) {
     assert.match(source, new RegExp(`app\\.post\\('/api/gemini/${route}', requireAuth, geminiRateLimiter`));
   }
-  assert.equal((source.match(/if \(!isRecord\(req\.body\)\)/g) || []).length, 5);
+  assert.match(source, /validateChatRequest\(req\.body\)/);
 });
 
 test('Gemini prompts retain explicit untrusted-data boundaries', async () => {
@@ -157,6 +165,13 @@ test('production persistence and synthetic guest fallbacks are development-gated
   assert.match(authSource, /import\.meta\.env\.DEV.*projectpilot_guest_active/);
 });
 
+test('frontend bootstrap dynamically loads Firebase-dependent application code and renders failures', async () => {
+  const source = await readFile(new URL('../src/main.tsx', import.meta.url), 'utf8');
+  assert.match(source, /import\('\.\/App\.tsx'\)/);
+  assert.match(source, /Application initialization failed/);
+  assert.match(source, /ProjectPilot configuration error/);
+});
+
 test('grounding links reject unsafe URL schemes', () => {
   const sources = safeGroundingSources([
     { title: 'unsafe', url: 'javascript:alert(1)' },
@@ -164,4 +179,61 @@ test('grounding links reject unsafe URL schemes', () => {
   ]);
   assert.equal(sources.length, 1);
   assert.equal(sources[0].title, 'safe');
+});
+
+test('chat validation accepts optional context and bounded history', () => {
+  const base = { message: 'Help with this project' };
+  assert.equal(validateChatRequest(base), null);
+  assert.equal(validateChatRequest({ ...base, projectContext: {} }), null);
+  assert.equal(validateChatRequest({ ...base, projectContext: { name: 'Project' }, conversationHistory: [] }), null);
+  assert.equal(validateChatRequest({
+    ...base,
+    projectContext: {
+      name: 'Project', shortDescription: 'Description', analysis: { keyObjectives: ['Ship'], suggestedTechStack: { frontend: 'React' } },
+      recentNotes: [{ title: 'Note', content: 'Content' }],
+      decisions: [{ decision: 'Use Firebase', reasoning: 'Realtime', status: 'ACCEPTED' }],
+      experiments: [{ name: 'Load test', hypothesis: 'Fast', result: 'Pass' }],
+    },
+    conversationHistory: Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `Message ${index}` })),
+  }), null);
+});
+
+test('chat validation rejects malformed and oversized history', () => {
+  const message = 'Help';
+  assert.match(validateChatRequest({ message, conversationHistory: Array.from({ length: 11 }, () => ({ role: 'user', content: 'x' })) }) || '', /malformed/i);
+  assert.match(validateChatRequest({ message, conversationHistory: [{ role: 'system', content: 'x' }] }) || '', /history/i);
+  assert.match(validateChatRequest({ message, conversationHistory: [{ role: 'user', content: 42 }] }) || '', /history/i);
+  assert.match(validateChatRequest({ message, conversationHistory: [{ role: 'user', content: 'x'.repeat(2001) }] }) || '', /history/i);
+  assert.match(validateChatRequest({ message, projectContext: false }) || '', /malformed/i);
+});
+
+test('Gemini configuration uses one verified default and explicit fallbacks only', () => {
+  assert.deepEqual(configuredGeminiModels({} as NodeJS.ProcessEnv), ['gemini-2.5-flash']);
+  assert.deepEqual(configuredGeminiModels({ GEMINI_MODEL: 'primary', GEMINI_FALLBACK_MODELS: 'fallback,primary' } as NodeJS.ProcessEnv), ['primary', 'fallback']);
+  assert.throws(() => getGeminiApiKey({} as NodeJS.ProcessEnv), /not configured/i);
+  assert.equal(getGeminiApiKey({ GEMINI_API_KEY: 'configured-placeholder' } as NodeJS.ProcessEnv), 'configured-placeholder');
+});
+
+test('Gemini HTTP failures are categorized without raw provider details', () => {
+  assert.equal(classifyGeminiError({ status: 400, message: 'raw' }).category, 'INVALID_REQUEST');
+  assert.equal(classifyGeminiError({ status: 401 }).category, 'AUTH_FAILED');
+  assert.equal(classifyGeminiError({ status: 403 }).category, 'AUTH_FAILED');
+  assert.equal(classifyGeminiError({ status: 404 }).category, 'MODEL_UNAVAILABLE');
+  assert.equal(classifyGeminiError({ status: 429 }).category, 'RATE_LIMITED');
+  assert.equal(classifyGeminiError({ status: 503 }).category, 'SERVICE_UNAVAILABLE');
+  assert.equal(classifyGeminiError(new Error('internal detail')).category, 'INTERNAL_ERROR');
+  assert.throws(() => parseGeminiJson('not-json'));
+});
+
+test('Cloud Build passes every required Firebase build argument without server secrets', async () => {
+  const config = await readFile(new URL('../cloudbuild.yaml', import.meta.url), 'utf8');
+  for (const name of [
+    'VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN', 'VITE_FIREBASE_PROJECT_ID',
+    'VITE_FIREBASE_STORAGE_BUCKET', 'VITE_FIREBASE_MESSAGING_SENDER_ID',
+    'VITE_FIREBASE_APP_ID', 'VITE_FIREBASE_DATABASE_ID',
+  ]) {
+    assert.match(config, new RegExp(`${name}=\\$\\{_${name}\\}`));
+  }
+  assert.doesNotMatch(config, /GEMINI_API_KEY/);
+  assert.doesNotMatch(config, /VITE_FIREBASE_MEASUREMENT_ID/);
 });

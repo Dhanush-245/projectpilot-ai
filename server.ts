@@ -75,28 +75,71 @@ function validProjectContext(value: unknown): boolean {
       validString(experiment.hypothesis, 300) && validString(experiment.result, 300));
 }
 
+export function validateChatRequest(value: unknown): string | null {
+  if (!isRecord(value)) return 'Request body must be a JSON object.';
+  const allowedRoles = ['ARCHITECT', 'TECH_LEAD', 'SECURITY', 'FULLSTACK_DEV'];
+  const allowedSpeeds = ['FAST', 'GENERAL', 'DEEP_REASONING'];
+  if (!validString(value.message, 3000, true) ||
+      (value.role !== undefined && (typeof value.role !== 'string' || !allowedRoles.includes(value.role))) ||
+      (value.speed !== undefined && (typeof value.speed !== 'string' || !allowedSpeeds.includes(value.speed))) ||
+      (value.useSearch !== undefined && typeof value.useSearch !== 'boolean') ||
+      !validProjectContext(value.projectContext) ||
+      !validRecordArray(value.conversationHistory, 10)) {
+    return 'Chat request is malformed.';
+  }
+  const history = (value.conversationHistory || []) as JsonRecord[];
+  if (history.some((item) => !['user', 'assistant'].includes(String(item.role)) || !validString(item.content, 2000, true))) {
+    return 'Conversation history is malformed.';
+  }
+  return null;
+}
+
 function badRequest(res: Response, message: string) {
   return res.status(400).json({ error: message });
 }
 
+export function getGeminiApiKey(env: NodeJS.ProcessEnv = process.env): string {
+  const apiKey = env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    const error = new Error('AI service is not configured.');
+    (error as any).code = 'GEMINI_NOT_CONFIGURED';
+    throw error;
+  }
+  return apiKey;
+}
+
 // Gemini SDK initialization helper
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured in server environment');
-  }
+  const apiKey = getGeminiApiKey();
   return new GoogleGenAI({ apiKey });
 }
 
-// Resilient Model Fallback Ladder
-const MODEL_FALLBACK_LADDER = [
-  'gemini-3.5-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3.1-pro-preview',
-  'gemini-3.6-flash',
-  'gemini-flash-latest',
-  'gemini-3.7-flash'
-];
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+
+export type GeminiErrorCategory =
+  | 'INVALID_REQUEST'
+  | 'AUTH_FAILED'
+  | 'MODEL_UNAVAILABLE'
+  | 'RATE_LIMITED'
+  | 'SERVICE_UNAVAILABLE'
+  | 'INTERNAL_ERROR';
+
+export function classifyGeminiError(error: unknown): { status?: number; category: GeminiErrorCategory } {
+  const statusValue = error && typeof error === 'object' && 'status' in error ? Number((error as any).status) : undefined;
+  const status = Number.isFinite(statusValue) ? statusValue : undefined;
+  if (status === 400) return { status, category: 'INVALID_REQUEST' };
+  if (status === 401 || status === 403) return { status, category: 'AUTH_FAILED' };
+  if (status === 404) return { status, category: 'MODEL_UNAVAILABLE' };
+  if (status === 429) return { status, category: 'RATE_LIMITED' };
+  if (status && status >= 500) return { status, category: 'SERVICE_UNAVAILABLE' };
+  return { status, category: 'INTERNAL_ERROR' };
+}
+
+export function configuredGeminiModels(env: NodeJS.ProcessEnv = process.env): string[] {
+  const primary = env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+  const fallbacks = (env.GEMINI_FALLBACK_MODELS || '').split(',').map((model) => model.trim()).filter(Boolean);
+  return [...new Set([primary, ...fallbacks])];
+}
 
 interface FallbackOptions {
   prompt: string;
@@ -104,8 +147,8 @@ interface FallbackOptions {
   responseSchema?: any;
   responseMimeType?: string;
   temperature?: number;
-  preferredModel?: string;
   enableGoogleSearch?: boolean;
+  endpoint: string;
 }
 
 interface GenerateResult {
@@ -117,18 +160,9 @@ interface GenerateResult {
 
 async function generateWithFallback(options: FallbackOptions): Promise<GenerateResult> {
   const ai = getGeminiClient();
-  let lastError: any = null;
 
-  // Build model ladder prioritizing preferredModel if specified
-  const ladder: string[] = [];
-  if (options.preferredModel) {
-    ladder.push(options.preferredModel);
-  }
-  for (const m of MODEL_FALLBACK_LADDER) {
-    if (!ladder.includes(m)) {
-      ladder.push(m);
-    }
-  }
+  const ladder = configuredGeminiModels();
+  let lastCategory: GeminiErrorCategory = 'INTERNAL_ERROR';
 
   for (const model of ladder) {
     try {
@@ -193,15 +227,20 @@ async function generateWithFallback(options: FallbackOptions): Promise<GenerateR
         };
       }
     } catch (err: any) {
-      console.warn('[GeminiFallback] model request failed', {
+      const diagnostic = classifyGeminiError(err);
+      lastCategory = diagnostic.category;
+      console.warn('[Gemini] request failed', {
+        endpoint: options.endpoint,
         model,
-        code: err?.code || err?.status || 'provider_error'
+        status: diagnostic.status,
+        category: diagnostic.category
       });
-      lastError = err;
     }
   }
 
-  throw new Error(`All Gemini models in fallback ladder failed. Last error: ${lastError?.message || 'Unknown error'}`);
+  const failure = new Error('AI service temporarily unavailable.');
+  (failure as any).code = `GEMINI_${lastCategory}`;
+  throw failure;
 }
 
 // Global Gemini rate limiter: Max 40 requests per 1-minute window per authenticated user/IP
@@ -303,9 +342,9 @@ Target Deadline: ${deadline || 'Flexible'}
 Provide thorough, high-quality engineering analysis for all fields in the JSON schema.`;
 
     const result = await generateWithFallback({
+      endpoint: 'analyze-project',
       prompt,
       systemInstruction,
-      preferredModel: 'gemini-3.5-flash',
       responseMimeType: 'application/json',
       temperature: 0.2
     });
@@ -624,38 +663,20 @@ Guidelines:
 // Protected with requireAuth + rateLimiter + prompt injection delimiters
 app.post('/api/gemini/chat', requireAuth, geminiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (!isRecord(req.body)) return badRequest(res, 'Request body must be a JSON object.');
+    const validationError = validateChatRequest(req.body);
+    if (validationError) return badRequest(res, validationError);
     const data: any = req.body;
-    const allowedRoles = ['ARCHITECT', 'TECH_LEAD', 'SECURITY', 'FULLSTACK_DEV'];
-    const allowedSpeeds = ['FAST', 'GENERAL', 'DEEP_REASONING'];
-    if (!validString(data.message, 3000, true) ||
-        (data.role !== undefined && (typeof data.role !== 'string' || !allowedRoles.includes(data.role))) ||
-        (data.speed !== undefined && (typeof data.speed !== 'string' || !allowedSpeeds.includes(data.speed))) ||
-        (data.useSearch !== undefined && typeof data.useSearch !== 'boolean') ||
-        !validProjectContext(data.projectContext) ||
-        !validRecordArray(data.conversationHistory, 10)) {
-      return badRequest(res, 'Chat request is malformed.');
-    }
     const history = (data.conversationHistory || []) as JsonRecord[];
-    if (history.some((item) => !['user', 'assistant'].includes(String(item.role)) || !validString(item.content, 2000, true))) {
-      return badRequest(res, 'Conversation history is malformed.');
-    }
     const message = sanitizeString(data.message, 3000);
     const role = ['ARCHITECT', 'TECH_LEAD', 'SECURITY', 'FULLSTACK_DEV'].includes(data.role) ? data.role : 'TECH_LEAD';
     const speed = ['FAST', 'GENERAL', 'DEEP_REASONING'].includes(data.speed) ? data.speed : 'GENERAL';
+    const temperature = speed === 'FAST' ? 0.2 : speed === 'DEEP_REASONING' ? 0.4 : 0.3;
     const useSearch = Boolean(data.useSearch);
     const projectContext = data.projectContext && typeof data.projectContext === 'object' ? data.projectContext : {};
     const conversationHistory = history;
 
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
-    }
-
-    let preferredModel = 'gemini-3.5-flash';
-    if (speed === 'FAST') {
-      preferredModel = 'gemini-3.1-flash-lite';
-    } else if (speed === 'DEEP_REASONING') {
-      preferredModel = 'gemini-3.1-pro-preview';
     }
 
     const systemInstruction = getRoleSystemInstruction(role, useSearch);
@@ -704,11 +725,11 @@ ${message}
 Provide a helpful, direct, and project-grounded response.`;
 
     const result = await generateWithFallback({
+      endpoint: 'chat',
       prompt,
       systemInstruction,
-      preferredModel,
       enableGoogleSearch: useSearch,
-      temperature: 0.3
+      temperature
     });
 
     res.json({
@@ -764,9 +785,9 @@ Provide a comprehensive, up-to-date research brief using Google Search grounding
 4. Potential Trade-offs or Gotchas`;
 
     const result = await generateWithFallback({
+      endpoint: 'research',
       prompt,
       systemInstruction,
-      preferredModel: 'gemini-3.5-flash',
       enableGoogleSearch: true,
       temperature: 0.2
     });
@@ -858,9 +879,9 @@ Current Metrics:
 Generate the full project health review JSON.`;
 
     const result = await generateWithFallback({
+      endpoint: 'health-assessment',
       prompt,
       systemInstruction,
-      preferredModel: 'gemini-3.5-flash',
       responseMimeType: 'application/json',
       temperature: 0.2
     });
@@ -904,9 +925,9 @@ Existing tasks: ${existingTasks.slice(0, 15).map((t: any) => sanitizeString(t.ti
 Return a JSON array of suggested tasks.`;
 
     const result = await generateWithFallback({
+      endpoint: 'suggest-tasks',
       prompt,
       systemInstruction,
-      preferredModel: 'gemini-3.1-flash-lite',
       responseMimeType: 'application/json',
       temperature: 0.3
     });

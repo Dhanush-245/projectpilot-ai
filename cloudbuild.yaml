@@ -1,0 +1,40 @@
+steps:
+  - name: node:22-slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        npm ci
+        npm run lint
+        npm test
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - --build-arg
+      - VITE_FIREBASE_API_KEY=${_VITE_FIREBASE_API_KEY}
+      - --build-arg
+      - VITE_FIREBASE_AUTH_DOMAIN=${_VITE_FIREBASE_AUTH_DOMAIN}
+      - --build-arg
+      - VITE_FIREBASE_PROJECT_ID=${_VITE_FIREBASE_PROJECT_ID}
+      - --build-arg
+      - VITE_FIREBASE_STORAGE_BUCKET=${_VITE_FIREBASE_STORAGE_BUCKET}
+      - --build-arg
+      - VITE_FIREBASE_MESSAGING_SENDER_ID=${_VITE_FIREBASE_MESSAGING_SENDER_ID}
+      - --build-arg
+      - VITE_FIREBASE_APP_ID=${_VITE_FIREBASE_APP_ID}
+      - --build-arg
+      - VITE_FIREBASE_DATABASE_ID=${_VITE_FIREBASE_DATABASE_ID}
+      - .
+images:
+  - ${_IMAGE}
+substitutions:
+  _IMAGE: asia-southeast1-docker.pkg.dev/gen-lang-client-0616895579/projectpilot/projectpilot-ai:latest
+  _VITE_FIREBASE_API_KEY: ''
+  _VITE_FIREBASE_AUTH_DOMAIN: gen-lang-client-0616895579.firebaseapp.com
+  _VITE_FIREBASE_PROJECT_ID: gen-lang-client-0616895579
+  _VITE_FIREBASE_STORAGE_BUCKET: gen-lang-client-0616895579.firebasestorage.app
+  _VITE_FIREBASE_MESSAGING_SENDER_ID: '446787300680'
+  _VITE_FIREBASE_APP_ID: '1:446787300680:web:0e26e01f33628b8fb5177d'
+  _VITE_FIREBASE_DATABASE_ID: ai-studio-projectpilotai-1d61b71b-ce25-43de-8d08-7305f8ede0db
