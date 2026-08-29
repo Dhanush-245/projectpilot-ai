@@ -1,4 +1,19 @@
 import { Project, ProjectAnalysis, ProjectHealthReview, Task } from '../types';
+import { getCurrentUserToken } from '../lib/firebase';
+
+/**
+ * Builds request headers with optional Bearer Firebase ID token when authenticated.
+ */
+async function buildAuthHeaders(): Promise<HeadersInit> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  };
+  const token = await getCurrentUserToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 export interface ProjectAnalysisResult {
   problemDefinition: string;
@@ -44,9 +59,10 @@ export async function requestProjectAnalysis(projectInput: {
   constraints?: string;
   deadline?: string;
 }): Promise<ProjectAnalysisResult> {
+  const headers = await buildAuthHeaders();
   const response = await fetch('/api/gemini/analyze-project', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(projectInput),
   });
 
@@ -78,9 +94,10 @@ export async function sendProjectChatMessage(params: {
   speed?: 'FAST' | 'GENERAL' | 'DEEP_REASONING';
   useSearch?: boolean;
 }): Promise<ChatResponseResult> {
+  const headers = await buildAuthHeaders();
   const response = await fetch('/api/gemini/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -111,9 +128,10 @@ export async function requestResearchGrounding(params: {
   groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
   webSearchQueries?: string[];
 }> {
+  const headers = await buildAuthHeaders();
   const response = await fetch('/api/gemini/research', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -143,9 +161,10 @@ export async function requestProjectHealthReview(params: {
   decisions: any[];
   experiments: any[];
 }): Promise<ProjectHealthReview> {
+  const headers = await buildAuthHeaders();
   const response = await fetch('/api/gemini/health-assessment', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -171,9 +190,10 @@ export async function requestSuggestedTasks(params: {
   objective?: string;
   existingTasks: Task[];
 }): Promise<Array<{ title: string; description: string; priority: 'LOW' | 'MEDIUM' | 'HIGH'; phase: string }>> {
+  const headers = await buildAuthHeaders();
   const response = await fetch('/api/gemini/suggest-tasks', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   });
 
@@ -185,3 +205,4 @@ export async function requestSuggestedTasks(params: {
   const result = await response.json();
   return result.tasks || [];
 }
+

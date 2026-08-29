@@ -18,15 +18,14 @@ While traditional AI tools offer disconnected chat dialogues or simple personal 
 6. **Project Memory (ADRs & Research Notes)**: Document technical tradeoffs and decisions that persist into AI context for long-term consistency.
 7. **Live Project Health & Diagnostics**: Gemini audits project momentum, flags unmitigated risks, and creates 1-click corrective action items.
 8. **Portable Markdown & JSON Export**: Full project export capabilities allowing developers to export their complete roadmap, notes, ADRs, and architecture as a portable Markdown document or JSON archive.
-9. **Production Security & Resilient Fallback Ladder**: Built with zero-trust Firestore security rules, server-side Gemini API key isolation, defensive payload parsing, and automated model fallback ladders (`gemini-3.5-flash` &rarr; `gemini-3.1-flash-lite` &rarr; `gemini-flash-latest` &rarr; `gemini-3.1-pro-preview`).
-
+9. **Zero-Trust Backend Security**: Express API gateway protected with Firebase Admin SDK ID token authentication (`Authorization: Bearer <token>`), in-memory rate limiting, untrusted data delimiters (`<UNTRUSTED_PROJECT_DATA>`), and automated model fallback ladders (`gemini-3.5-flash` &rarr; `gemini-3.1-flash-lite` &rarr; `gemini-flash-latest` &rarr; `gemini-3.1-pro-preview`).
 
 ---
 
 ## 🏗️ Architecture & Technology Stack
 
 - **Frontend**: React 18, TypeScript, Tailwind CSS, Lucide Icons, React Markdown
-- **Backend**: Node.js & Express API Gateway (serves static Vite SPA in production)
+- **Backend API Gateway**: Node.js Express server (`server.ts`) with Firebase Admin SDK token verification
 - **AI Intelligence**: Google Gemini SDK (`@google/genai`) with server-side proxying and resilience ladder
 - **Database & Auth**: Google Cloud Firestore & Firebase Authentication (Google Sign-In & Guest Session Mode)
 - **Deployment Platform**: Google Cloud Run (Containerized Microservice)
@@ -34,9 +33,17 @@ While traditional AI tools offer disconnected chat dialogues or simple personal 
 
 ---
 
-## 🔒 Security Architecture & Firestore Rules
+## 🔒 Security Architecture & Zero-Trust Defense
 
-ProjectPilot AI enforces **Zero Insecure Defaults**. Every user's projects, tasks, notes, decisions, and chat threads are isolated to their authenticated UID.
+ProjectPilot AI enforces **Zero Insecure Defaults** across all 5 Threat Zones:
+
+| Threat Zone | Risk Identified | Countermeasure & Implementation |
+| :--- | :--- | :--- |
+| **Input Surfaces** | Malicious injection & oversized payloads | Strict body size limits (2MB), string truncation sanitizer (`sanitizeString`), and schema validation |
+| **Planning & Reasoning** | Prompt injection & system prompt override | All user inputs & project context are encapsulated inside `<UNTRUSTED_PROJECT_DATA>` tags with explicit safety directives |
+| **Tool & Endpoint Execution** | Unauthenticated Gemini API abuse & credential theft | Firebase Admin SDK verifies Bearer ID tokens on every `/api/gemini/*` endpoint; rate limiting active |
+| **Memory & State** | Cross-user data leakage & tampering | Strict owner-bound Firestore rules (`request.auth.uid == userId`) and sanitizeData helpers stripping `undefined` properties |
+| **Inter-System & Cloud Secrets** | API key exposure | `GEMINI_API_KEY` is isolated server-side via Cloud Secret Manager; zero frontend exposure |
 
 ### Firestore Security Rules (`firestore.rules`)
 ```javascript
@@ -130,7 +137,7 @@ firebase deploy --only firestore:rules
 ---
 
 ### 4. Build and Deploy to Cloud Run
-Deploy the application directly to Cloud Run using source deployment or container image with the Secret Manager binding:
+Deploy the application directly to Cloud Run using source deployment with the Secret Manager binding:
 
 ```bash
 gcloud run deploy projectpilot-ai \
@@ -156,10 +163,11 @@ gcloud run services update projectpilot-ai \
 
 ## 🧪 Comprehensive Manual Walkthrough & Verification Guide
 
-### Test Suite 1: Authentication & Workspace Isolation
-1. **Google Sign-In**: Click "Continue with Google". Confirm user profile displays in Navbar.
+### Test Suite 1: Authentication & Zero-Trust Workspace Isolation
+1. **Google Sign-In**: Click "Continue with Google". Confirm user profile displays in Navbar and Firebase ID token is attached to backend API requests.
 2. **Guest Mode**: Sign out and click "Continue as Guest". Confirm anonymous UID is provisioned and local state operates cleanly.
-3. **Data Isolation**: Verify in Firestore Console that documents are created under `/users/{auth.uid}/projects/{projectId}`.
+3. **Data Isolation**: Verify in Firestore Console that documents are created strictly under `/users/{auth.uid}/projects/{projectId}`.
+4. **Backend Token Rejection**: Send a raw POST to `/api/gemini/analyze-project` without an `Authorization` header and confirm HTTP 401 Unauthorized is returned.
 
 ### Test Suite 2: Project Creation & Gemini Architecture Analysis
 1. Click **+ New Project**. Enter Name (*"CloudScale Analytics"*), Description (*"High throughput stream processor"*), and leave "Generate Project Plan with Gemini" checked.
@@ -183,19 +191,25 @@ gcloud run services update projectpilot-ai \
 3. Verify Gemini references your actual uncompleted roadmap tasks and project architecture in its response.
 4. Click **New Thread** and test multi-conversation persistence across page reloads.
 
-### Test Suite 5: Project Memory (ADRs & Notes)
+### Test Suite 5: Live Google Search Research Grounding
+1. Click **Research Grounding** in the header.
+2. Search a query such as: *"Latest best practices for React 19 server components vs client architecture"*.
+3. Observe live web search results, source URLs, and clear technical synthesis.
+4. Click **Save as Note** to verify instant synchronization with project knowledge base.
+
+### Test Suite 6: Project Memory (ADRs & Notes)
 1. Navigate to **Knowledge & ADRs**.
 2. Record an Architecture Decision Record (e.g. *Decision: "Use Firestore for real-time listener subscriptions"*, *Status: "ACCEPTED"*).
 3. Create a Research Note with category *"RESEARCH"* and tags `database, latency`.
 4. Test instant text filtering and search.
 
-### Test Suite 6: Live Health Diagnostic & 1-Click Action Queue
+### Test Suite 7: Live Health Diagnostic & 1-Click Action Queue
 1. Navigate to **Health & Feasibility**.
 2. Click **Run Live Diagnostic**. Observe Gemini auditing the roadmap momentum and architecture decisions.
 3. Review Health Score (0-100), execution strengths, and identified risks.
 4. Click **+ Add to Roadmap** on a recommended action item and confirm it is immediately appended to your roadmap backlog.
 
-### Test Suite 7: Project Settings & Workspace Export
+### Test Suite 8: Project Settings & Workspace Export
 1. Navigate to **Settings**.
 2. Click **Export JSON Workspace**. Verify a structured `.json` backup file containing your project metadata, tasks, ADRs, and notes is downloaded.
 3. Modify project metadata and save.

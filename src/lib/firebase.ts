@@ -16,12 +16,12 @@ import {
 import firebaseConfigData from '../../firebase-applet-config.json';
 
 const firebaseConfig = {
-  apiKey: firebaseConfigData.apiKey,
-  authDomain: firebaseConfigData.authDomain,
-  projectId: firebaseConfigData.projectId,
-  storageBucket: firebaseConfigData.storageBucket,
-  messagingSenderId: firebaseConfigData.messagingSenderId,
-  appId: firebaseConfigData.appId,
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string) || firebaseConfigData.apiKey,
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || firebaseConfigData.authDomain,
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || firebaseConfigData.projectId,
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || firebaseConfigData.storageBucket,
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || firebaseConfigData.messagingSenderId,
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || firebaseConfigData.appId,
 };
 
 // Initialize Firebase App
@@ -79,3 +79,17 @@ export async function logoutUser(): Promise<void> {
 
 export { onAuthStateChanged };
 export type { FirebaseUser };
+
+/**
+ * Retrieves the current user's Firebase ID token for authenticated backend API requests.
+ */
+export async function getCurrentUserToken(forceRefresh: boolean = false): Promise<string | null> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return null;
+  try {
+    return await currentUser.getIdToken(forceRefresh);
+  } catch (err) {
+    console.error('Failed to retrieve Firebase ID token:', err);
+    return null;
+  }
+}
