@@ -118,7 +118,7 @@ Cloud Run instances.
 ### Gemini models requiring deployment-time verification
 
 The server uses `GEMINI_MODEL`, defaulting to the official SDK quickstart model
-`gemini-2.5-flash`. Optional `GEMINI_FALLBACK_MODELS` values are used only when
+`gemini-3.7-flash`. Optional `GEMINI_FALLBACK_MODELS` values are used only when
 an operator explicitly supplies comma-separated model IDs verified for the same
 Gemini Developer API key and project. The application no longer guesses future
 model names in source code.
