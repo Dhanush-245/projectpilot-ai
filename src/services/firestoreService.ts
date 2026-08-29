@@ -36,6 +36,9 @@ interface LocalDataStore {
 }
 
 function getLocalStore(uid: string): LocalDataStore {
+  if (!import.meta.env.DEV) {
+    throw new Error('Local persistence fallback is disabled in production');
+  }
   try {
     const raw = localStorage.getItem(`projectpilot_store_${uid}`);
     if (raw) {
@@ -56,6 +59,9 @@ function getLocalStore(uid: string): LocalDataStore {
 }
 
 function saveLocalStore(uid: string, store: LocalDataStore): void {
+  if (!import.meta.env.DEV) {
+    throw new Error('Local persistence fallback is disabled in production');
+  }
   try {
     localStorage.setItem(`projectpilot_store_${uid}`, JSON.stringify(store));
     // Emit reactive event
@@ -71,6 +77,11 @@ function isLocalMode(uid: string): boolean {
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+function mutableFields<T extends Record<string, any>>(updates: T): Omit<T, 'id' | 'uid' | 'projectId' | 'createdAt'> {
+  const { id: _id, uid: _uid, projectId: _projectId, createdAt: _createdAt, ...mutable } = updates;
+  return mutable;
 }
 
 // ==========================================
@@ -128,6 +139,7 @@ export async function createProject(uid: string, projectData: Omit<Project, 'id'
 
 export async function updateProject(uid: string, projectId: string, updates: Partial<Project>): Promise<void> {
   const now = Date.now();
+  const safeUpdates = mutableFields(updates);
 
   if (isLocalMode(uid)) {
     const store = getLocalStore(uid);
@@ -135,7 +147,7 @@ export async function updateProject(uid: string, projectId: string, updates: Par
     if (idx !== -1) {
       store.projects[idx] = {
         ...store.projects[idx],
-        ...updates,
+        ...safeUpdates,
         updatedAt: now
       };
       saveLocalStore(uid, store);
@@ -146,7 +158,7 @@ export async function updateProject(uid: string, projectId: string, updates: Par
   try {
     const projectDocRef = doc(db, `users/${uid}/projects/${projectId}`);
     const payload = {
-      ...updates,
+      ...safeUpdates,
       updatedAt: now
     };
     await updateDoc(projectDocRef, sanitizeData(payload));
@@ -157,7 +169,7 @@ export async function updateProject(uid: string, projectId: string, updates: Par
     if (idx !== -1) {
       store.projects[idx] = {
         ...store.projects[idx],
-        ...updates,
+        ...safeUpdates,
         updatedAt: now
       };
       saveLocalStore(uid, store);
@@ -311,7 +323,7 @@ export async function createBatchTasks(uid: string, projectId: string, tasksData
 }
 
 export async function updateTask(uid: string, projectId: string, taskId: string, updates: Partial<Task>): Promise<void> {
-  const payload: any = { ...updates };
+  const payload: any = { ...mutableFields(updates) };
   if (updates.status === 'COMPLETED' && !updates.completedAt) {
     payload.completedAt = Date.now();
   } else if (updates.status && updates.status !== 'COMPLETED') {
@@ -472,6 +484,7 @@ export async function createNote(uid: string, projectId: string, noteData: Omit<
 
 export async function updateNote(uid: string, projectId: string, noteId: string, updates: Partial<Note>): Promise<void> {
   const now = Date.now();
+  const safeUpdates = mutableFields(updates);
 
   if (isLocalMode(uid)) {
     const store = getLocalStore(uid);
@@ -479,7 +492,7 @@ export async function updateNote(uid: string, projectId: string, noteId: string,
     if (idx !== -1) {
       store.notes[idx] = {
         ...store.notes[idx],
-        ...updates,
+        ...safeUpdates,
         updatedAt: now
       };
       saveLocalStore(uid, store);
@@ -491,7 +504,7 @@ export async function updateNote(uid: string, projectId: string, noteId: string,
   try {
     const noteDocRef = doc(db, `users/${uid}/projects/${projectId}/notes/${noteId}`);
     const payload = {
-      ...updates,
+      ...safeUpdates,
       updatedAt: now
     };
     await updateDoc(noteDocRef, sanitizeData(payload));
@@ -503,7 +516,7 @@ export async function updateNote(uid: string, projectId: string, noteId: string,
     if (idx !== -1) {
       store.notes[idx] = {
         ...store.notes[idx],
-        ...updates,
+        ...safeUpdates,
         updatedAt: now
       };
       saveLocalStore(uid, store);
@@ -628,6 +641,32 @@ export async function createDecision(uid: string, projectId: string, decisionDat
   }
 }
 
+export async function updateDecision(uid: string, projectId: string, decisionId: string, updates: Partial<Decision>): Promise<void> {
+  const safeUpdates = mutableFields(updates);
+  if (isLocalMode(uid)) {
+    const store = getLocalStore(uid);
+    const index = store.decisions.findIndex((decision) => decision.id === decisionId && decision.projectId === projectId);
+    if (index !== -1) {
+      store.decisions[index] = { ...store.decisions[index], ...safeUpdates, id: decisionId, projectId, uid };
+      saveLocalStore(uid, store);
+    }
+    return;
+  }
+  try {
+    const decisionRef = doc(db, `users/${uid}/projects/${projectId}/decisions/${decisionId}`);
+    await updateDoc(decisionRef, sanitizeData(safeUpdates));
+    await updateProject(uid, projectId, {});
+  } catch (err) {
+    console.warn('Firestore updateDecision failed:', err);
+    const store = getLocalStore(uid);
+    const index = store.decisions.findIndex((decision) => decision.id === decisionId && decision.projectId === projectId);
+    if (index !== -1) {
+      store.decisions[index] = { ...store.decisions[index], ...safeUpdates, id: decisionId, projectId, uid };
+      saveLocalStore(uid, store);
+    }
+  }
+}
+
 export async function deleteDecision(uid: string, projectId: string, decisionId: string): Promise<void> {
   if (isLocalMode(uid)) {
     const store = getLocalStore(uid);
@@ -745,13 +784,14 @@ export async function createExperiment(uid: string, projectId: string, expData: 
 }
 
 export async function updateExperiment(uid: string, projectId: string, expId: string, updates: Partial<Experiment>): Promise<void> {
+  const safeUpdates = mutableFields(updates);
   if (isLocalMode(uid)) {
     const store = getLocalStore(uid);
     const idx = store.experiments.findIndex(e => e.id === expId);
     if (idx !== -1) {
       store.experiments[idx] = {
         ...store.experiments[idx],
-        ...updates
+        ...safeUpdates
       };
       saveLocalStore(uid, store);
       await updateProject(uid, projectId, {});
@@ -761,7 +801,7 @@ export async function updateExperiment(uid: string, projectId: string, expId: st
 
   try {
     const docRef = doc(db, `users/${uid}/projects/${projectId}/experiments/${expId}`);
-    await updateDoc(docRef, sanitizeData(updates));
+    await updateDoc(docRef, sanitizeData(safeUpdates));
     await updateProject(uid, projectId, {});
   } catch (err) {
     console.warn('Firestore updateExperiment failed, updating locally:', err);
@@ -770,7 +810,7 @@ export async function updateExperiment(uid: string, projectId: string, expId: st
     if (idx !== -1) {
       store.experiments[idx] = {
         ...store.experiments[idx],
-        ...updates
+        ...safeUpdates
       };
       saveLocalStore(uid, store);
       await updateProject(uid, projectId, {});

@@ -12,10 +12,12 @@ export function getFirebaseAdmin(): App {
     if (apps.length > 0 && apps[0]) {
       firebaseAdminApp = apps[0];
     } else {
-      const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0616895579';
-      firebaseAdminApp = initializeApp({
-        projectId
-      });
+      // Prefer an explicit Firebase project when configured. With no explicit
+      // override, initializeApp() uses Application Default Credentials and
+      // Google Cloud project discovery (including GOOGLE_CLOUD_PROJECT) on
+      // Cloud Run, without a service-account key file.
+      const projectId = process.env.FIREBASE_PROJECT_ID;
+      firebaseAdminApp = projectId ? initializeApp({ projectId }) : initializeApp();
     }
   }
   return firebaseAdminApp;
@@ -30,7 +32,14 @@ export interface AuthenticatedRequest extends Request {
  * Extracts and verifies the Firebase ID token from `Authorization: Bearer <token>`
  * Returns HTTP 401 for missing, malformed, expired, or invalid tokens without exposing internals.
  */
-export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+type VerifyIdToken = (token: string) => Promise<DecodedIdToken>;
+
+async function verifyFirebaseIdToken(token: string): Promise<DecodedIdToken> {
+  return getAuth(getFirebaseAdmin()).verifyIdToken(token);
+}
+
+export function createRequireAuth(verifyIdToken: VerifyIdToken = verifyFirebaseIdToken) {
+  return async function requireAuthMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -47,9 +56,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   }
 
   try {
-    const adminApp = getFirebaseAdmin();
-    const authService = getAuth(adminApp);
-    const decodedToken = await authService.verifyIdToken(token);
+    const decodedToken = await verifyIdToken(token);
     
     if (!decodedToken || !decodedToken.uid) {
       return res.status(401).json({
@@ -67,7 +74,10 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       error: 'Unauthorized: Token verification failed or token has expired.'
     });
   }
+  };
 }
+
+export const requireAuth = createRequireAuth();
 
 /**
  * In-memory lightweight rate limiter for Cloud Run / stateless Node.js.
@@ -81,7 +91,7 @@ interface RateLimitRecord {
 const rateLimitMap = new Map<string, RateLimitRecord>();
 
 // Clean up stale rate limit entries periodically (every 5 minutes)
-setInterval(() => {
+const rateLimitCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, record] of rateLimitMap.entries()) {
     if (now > record.resetTime) {
@@ -89,6 +99,7 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000);
+rateLimitCleanupTimer.unref();
 
 export function rateLimit(options: { windowMs: number; maxRequests: number }) {
   const { windowMs, maxRequests } = options;

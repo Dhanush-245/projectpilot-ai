@@ -30,6 +30,7 @@ import {
   deleteNote,
   subscribeToDecisions, 
   createDecision, 
+  updateDecision,
   deleteDecision,
   subscribeToExperiments, 
   createExperiment, 
@@ -388,8 +389,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
 
   const modifyDecision = async (decisionId: string, updates: Partial<Decision>) => {
     if (!user || !activeProjectId) return;
-    // Update local or Firestore decision
-    await updateProject(user.uid, activeProjectId, { updatedAt: Date.now() });
+    await updateDecision(user.uid, activeProjectId, decisionId, updates);
   };
 
   const removeDecision = async (decisionId: string) => {
@@ -512,7 +512,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         activeProjectId,
         convId,
         'assistant',
-        `⚠️ *Unable to generate response:* ${err?.message || 'Gemini service is currently unavailable. Please verify your connection and try again.'}`
+        '⚠️ *Unable to generate response.* Please verify your authentication and connection, then try again.'
       );
     } finally {
       setIsSendingChat(false);

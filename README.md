@@ -7,7 +7,7 @@
 
 ## 🌟 Overview & Original Enhancements
 
-**ProjectPilot AI** is a production-grade, secure, multi-project intelligence workspace designed for students, software engineers, researchers, and technical builders. 
+**ProjectPilot AI** is a multi-project intelligence workspace designed for students, software engineers, researchers, and technical builders. Production deployment and cloud-secret configuration must be completed separately.
 
 While traditional AI tools offer disconnected chat dialogues or simple personal journals, ProjectPilot AI transforms unstructured thoughts into an **end-to-end engineered project ecosystem**:
 1. **Multi-Project Workspace**: Manage independent projects, each isolated securely in Cloud Firestore.
@@ -18,18 +18,18 @@ While traditional AI tools offer disconnected chat dialogues or simple personal 
 6. **Project Memory (ADRs & Research Notes)**: Document technical tradeoffs and decisions that persist into AI context for long-term consistency.
 7. **Live Project Health & Diagnostics**: Gemini audits project momentum, flags unmitigated risks, and creates 1-click corrective action items.
 8. **Portable Markdown & JSON Export**: Full project export capabilities allowing developers to export their complete roadmap, notes, ADRs, and architecture as a portable Markdown document or JSON archive.
-9. **Zero-Trust Backend Security**: Express API gateway protected with Firebase Admin SDK ID token authentication (`Authorization: Bearer <token>`), in-memory rate limiting, untrusted data delimiters (`<UNTRUSTED_PROJECT_DATA>`), and automated model fallback ladders (`gemini-3.5-flash` &rarr; `gemini-3.1-flash-lite` &rarr; `gemini-flash-latest` &rarr; `gemini-3.1-pro-preview`).
+9. **Authenticated Backend Security**: Express API gateway protected with Firebase Admin SDK ID token authentication (`Authorization: Bearer <token>`), instance-local rate limiting, untrusted data delimiters (`<UNTRUSTED_PROJECT_DATA>`), and a configurable model fallback ladder.
 
 ---
 
 ## 🏗️ Architecture & Technology Stack
 
-- **Frontend**: React 18, TypeScript, Tailwind CSS, Lucide Icons, React Markdown
+- **Frontend**: React 19, TypeScript, Tailwind CSS, Lucide Icons, React Markdown
 - **Backend API Gateway**: Node.js Express server (`server.ts`) with Firebase Admin SDK token verification
 - **AI Intelligence**: Google Gemini SDK (`@google/genai`) with server-side proxying and resilience ladder
-- **Database & Auth**: Google Cloud Firestore & Firebase Authentication (Google Sign-In & Guest Session Mode)
-- **Deployment Platform**: Google Cloud Run (Containerized Microservice)
-- **Secret Management**: Google Cloud Secret Manager
+- **Database & Auth**: Cloud Firestore and Firebase Authentication (Google and Firebase Anonymous Auth)
+- **Deployment Target**: Google Cloud Run; deployment is not completed by this repository alone
+- **Secret Management Target**: Google Cloud Secret Manager; configure it during deployment
 
 ---
 
@@ -43,7 +43,7 @@ ProjectPilot AI enforces **Zero Insecure Defaults** across all 5 Threat Zones:
 | **Planning & Reasoning** | Prompt injection & system prompt override | All user inputs & project context are encapsulated inside `<UNTRUSTED_PROJECT_DATA>` tags with explicit safety directives |
 | **Tool & Endpoint Execution** | Unauthenticated Gemini API abuse & credential theft | Firebase Admin SDK verifies Bearer ID tokens on every `/api/gemini/*` endpoint; rate limiting active |
 | **Memory & State** | Cross-user data leakage & tampering | Strict owner-bound Firestore rules (`request.auth.uid == userId`) and sanitizeData helpers stripping `undefined` properties |
-| **Inter-System & Cloud Secrets** | API key exposure | `GEMINI_API_KEY` is isolated server-side via Cloud Secret Manager; zero frontend exposure |
+| **Inter-System & Cloud Secrets** | API key exposure | `GEMINI_API_KEY` is server-only and must be bound from Secret Manager during deployment; it is never a `VITE_*` variable |
 
 ### Firestore Security Rules (`firestore.rules`)
 ```javascript
@@ -87,6 +87,41 @@ service cloud.firestore {
 
 ## 🚀 Step-by-Step Google Cloud Run Deployment
 
+> Deployment status: the repository contains deployment configuration, but no
+> successful Cloud Run deployment or Secret Manager binding is claimed here.
+
+### Local configuration
+
+Use npm as the canonical package manager:
+
+```bash
+npm ci
+npm run dev
+```
+
+Copy `.env.example` to an ignored local `.env` and populate the seven public
+Firebase web variables. `VITE_FIREBASE_MEASUREMENT_ID` is optional. The
+server-only `GEMINI_API_KEY` must never use a `VITE_` prefix. The frontend no
+longer reads `firebase-applet-config.json`.
+
+Firebase Anonymous Auth produces a real Firebase user and ID token when it is
+enabled. If Firebase Auth is unavailable during local development, the app can
+use a clearly labelled `guest-*` local-preview identity and browser storage.
+That preview identity has no ID token and cannot call protected Gemini routes.
+In production, synthetic guest fallback and silent Firestore-to-localStorage
+downgrades are disabled.
+
+The 40 requests/minute Gemini limiter is retained as immediate protection. It
+is memory-backed and instance-local, so it is not a distributed quota across
+Cloud Run instances.
+
+### Gemini models requiring deployment-time verification
+
+The source currently references `gemini-3.5-flash`, `gemini-3.1-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.6-flash`, `gemini-flash-latest`, and
+`gemini-3.7-flash`. Availability was not changed in this remediation phase;
+verify each identifier in the target Google AI project before deployment.
+
 ### 1. Prerequisites & GCP APIs Setup
 Ensure you have the Google Cloud SDK (`gcloud`) installed and configured:
 ```bash
@@ -108,21 +143,24 @@ gcloud services enable \
 ---
 
 ### 2. Secret Manager Configuration (Zero-Hardcoding Hygiene)
-Create and populate the `GEMINI_API_KEY` in Google Cloud Secret Manager, and grant the Cloud Run compute service account access:
+Create a dedicated Cloud Run runtime identity, create the secret, add its value
+through standard input (so it is not placed in a command argument), and grant
+that identity access only to this secret:
 
 ```bash
 # Create secret in Secret Manager
 gcloud secrets create GEMINI_API_KEY --replication-policy="automatic"
 
-# Add secret version with your Gemini API key
-echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets versions add GEMINI_API_KEY --data-file=-
+# Create a dedicated runtime service account
+gcloud iam service-accounts create projectpilot-runtime \
+  --display-name="ProjectPilot Cloud Run runtime"
 
-# Retrieve your Project Number
-PROJECT_NUMBER=$(gcloud projects describe YOUR_PROJECT_ID --format="value(projectNumber)")
+# Add the key through stdin; paste it when prompted and then send EOF
+gcloud secrets versions add GEMINI_API_KEY --data-file=-
 
-# Grant the default Cloud Run service account access to read the secret
+# Grant only the dedicated runtime identity access to this secret
 gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --member="serviceAccount:projectpilot-runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```
 
@@ -131,22 +169,39 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
 ### 3. Deploy Firestore Security Rules
 Deploy the owner-bound rules using the Firebase CLI:
 ```bash
-firebase deploy --only firestore:rules
+firebase deploy --only firestore:rules --project YOUR_FIREBASE_PROJECT_ID
 ```
 
 ---
 
 ### 4. Build and Deploy to Cloud Run
-Deploy the application directly to Cloud Run using source deployment with the Secret Manager binding:
+Deploy the application to Cloud Run using an immutable container image and a Secret Manager binding:
+
+```bash
+docker build \
+  --build-arg VITE_FIREBASE_API_KEY="PUBLIC_FIREBASE_WEB_API_KEY" \
+  --build-arg VITE_FIREBASE_AUTH_DOMAIN="YOUR_AUTH_DOMAIN" \
+  --build-arg VITE_FIREBASE_PROJECT_ID="YOUR_FIREBASE_PROJECT_ID" \
+  --build-arg VITE_FIREBASE_STORAGE_BUCKET="YOUR_STORAGE_BUCKET" \
+  --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="YOUR_SENDER_ID" \
+  --build-arg VITE_FIREBASE_APP_ID="YOUR_APP_ID" \
+  --tag IMAGE_URL .
+```
+
+Push `IMAGE_URL` to Artifact Registry, then deploy that immutable image and
+bind the server-only secret:
 
 ```bash
 gcloud run deploy projectpilot-ai \
-  --source . \
+  --image IMAGE_URL \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
-  --port 3000
+  --service-account="projectpilot-runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --set-env-vars="FIREBASE_PROJECT_ID=YOUR_FIREBASE_PROJECT_ID" \
+  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 ```
+
+Never pass `GEMINI_API_KEY` as a build argument or a `VITE_*` value.
 
 ---
 
@@ -162,6 +217,47 @@ gcloud run services update projectpilot-ai \
 ---
 
 ## 🧪 Comprehensive Manual Walkthrough & Verification Guide
+
+### Automated verification
+
+```bash
+npm ci
+npm run lint
+npm test
+npm run build
+npm audit
+```
+
+The test suite covers Firebase-token middleware behavior, rate limiting,
+request-shape safeguards, prompt boundaries, response normalization, Firestore
+owner isolation, production fallback gating, safe grounding URLs, and export
+redaction. A production build should also be scanned to ensure server-only
+secret names and credential-shaped values are absent from `dist/index.html`
+and `dist/assets/`.
+
+### Security and operational limitations
+
+- The in-memory rate limiter applies independently to each Cloud Run instance.
+- Gemini model identifiers must be checked in the target Google AI project.
+- Local preview storage is intentionally non-durable and development-only.
+- Firebase web configuration is public browser configuration; protect data with
+  Firestore rules and restrict the associated API key in Google Cloud.
+- `GEMINI_API_KEY` is server-only and must be supplied through Secret Manager.
+- Historical Git cleanup and credential review are separate approval-gated
+  operations and are not implied by a successful application build.
+- Cloud Run, Firestore rules, Secret Manager, IAM, and live authentication must
+  be verified in the target project before claiming production deployment.
+
+### Troubleshooting
+
+- A missing Firebase configuration error means one or more required
+  `VITE_FIREBASE_*` values were unavailable during the Vite build.
+- Repeated HTTP 401 responses usually indicate an expired/invalid Firebase ID
+  token or a mismatch between frontend and Admin Firebase projects.
+- Local preview guests cannot call Gemini APIs because they do not possess a
+  Firebase ID token.
+- A Firestore persistence error in production is surfaced deliberately; the
+  app does not silently substitute browser storage.
 
 ### Test Suite 1: Authentication & Zero-Trust Workspace Isolation
 1. **Google Sign-In**: Click "Continue with Google". Confirm user profile displays in Navbar and Firebase ID token is attached to backend API requests.

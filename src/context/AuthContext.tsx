@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
       } else {
         // Check if guest preview mode was active
-        const isGuestActive = localStorage.getItem('projectpilot_guest_active') === 'true';
+        const isGuestActive = import.meta.env.DEV && localStorage.getItem('projectpilot_guest_active') === 'true';
         const savedGuestUid = localStorage.getItem('projectpilot_guest_uid');
         if (isGuestActive && savedGuestUid) {
           setUser({
@@ -60,7 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, (err) => {
       console.error('Auth state listener error:', err);
       // If error occurs, check if guest active
-      const isGuestActive = localStorage.getItem('projectpilot_guest_active') === 'true';
+      const isGuestActive = import.meta.env.DEV && localStorage.getItem('projectpilot_guest_active') === 'true';
       const savedGuestUid = localStorage.getItem('projectpilot_guest_uid');
       if (isGuestActive && savedGuestUid) {
         setUser({
@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else if (err.code === 'auth/popup-blocked') {
         setError('Popup was blocked by your browser. Please allow popups or use Instant Developer Preview.');
       } else {
-        setError(err?.message || 'Failed to sign in with Google');
+        setError('Failed to sign in with Google. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -105,19 +105,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       await loginAsGuest();
     } catch (err: any) {
-      console.warn('Firebase Anonymous Auth unavailable, activating local developer preview session:', err);
-      // Graceful fallback to local guest session
-      const guestUid = localStorage.getItem('projectpilot_guest_uid') || `guest-${Math.random().toString(36).substring(2, 10)}`;
-      localStorage.setItem('projectpilot_guest_uid', guestUid);
-      localStorage.setItem('projectpilot_guest_active', 'true');
-      
-      setUser({
-        uid: guestUid,
-        email: null,
-        displayName: 'Guest Builder',
-        photoURL: null,
-        isAnonymous: true
-      });
+      if (import.meta.env.DEV) {
+        console.warn('Firebase Anonymous Auth unavailable; using local preview mode.');
+        const guestUid = localStorage.getItem('projectpilot_guest_uid') || `guest-${Math.random().toString(36).substring(2, 10)}`;
+        localStorage.setItem('projectpilot_guest_uid', guestUid);
+        localStorage.setItem('projectpilot_guest_active', 'true');
+        setUser({
+          uid: guestUid,
+          email: null,
+          displayName: 'Guest Builder (Local Preview)',
+          photoURL: null,
+          isAnonymous: true
+        });
+      } else {
+        console.error('Firebase Anonymous Auth failed:', err?.code || 'auth/unknown');
+        setError('Guest sign-in is unavailable. Please use Google sign-in or try again later.');
+      }
     } finally {
       setLoading(false);
     }

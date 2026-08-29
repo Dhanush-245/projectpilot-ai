@@ -1,5 +1,6 @@
 import { Project, ProjectAnalysis, ProjectHealthReview, Task } from '../types';
 import { getCurrentUserToken } from '../lib/firebase';
+import { safeGroundingSources } from '../utils/grounding';
 
 /**
  * Builds request headers with optional Bearer Firebase ID token when authenticated.
@@ -13,6 +14,22 @@ async function buildAuthHeaders(): Promise<HeadersInit> {
     headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
+}
+
+async function authenticatedPost(path: string, payload: unknown): Promise<Response> {
+  const body = JSON.stringify(payload);
+  let response = await fetch(path, { method: 'POST', headers: await buildAuthHeaders(), body });
+  if (response.status === 401) {
+    const refreshedToken = await getCurrentUserToken(true);
+    if (refreshedToken) {
+      response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${refreshedToken}` },
+        body,
+      });
+    }
+  }
+  return response;
 }
 
 export interface ProjectAnalysisResult {
@@ -59,12 +76,7 @@ export async function requestProjectAnalysis(projectInput: {
   constraints?: string;
   deadline?: string;
 }): Promise<ProjectAnalysisResult> {
-  const headers = await buildAuthHeaders();
-  const response = await fetch('/api/gemini/analyze-project', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(projectInput),
-  });
+  const response = await authenticatedPost('/api/gemini/analyze-project', projectInput);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -94,12 +106,7 @@ export async function sendProjectChatMessage(params: {
   speed?: 'FAST' | 'GENERAL' | 'DEEP_REASONING';
   useSearch?: boolean;
 }): Promise<ChatResponseResult> {
-  const headers = await buildAuthHeaders();
-  const response = await fetch('/api/gemini/chat', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(params),
-  });
+  const response = await authenticatedPost('/api/gemini/chat', params);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -114,7 +121,7 @@ export async function sendProjectChatMessage(params: {
   return {
     reply: result.reply,
     modelUsed: result.modelUsed,
-    groundingSources: result.groundingSources || [],
+    groundingSources: safeGroundingSources(result.groundingSources),
     webSearchQueries: result.webSearchQueries || []
   };
 }
@@ -128,12 +135,7 @@ export async function requestResearchGrounding(params: {
   groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
   webSearchQueries?: string[];
 }> {
-  const headers = await buildAuthHeaders();
-  const response = await fetch('/api/gemini/research', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(params),
-  });
+  const response = await authenticatedPost('/api/gemini/research', params);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -148,7 +150,7 @@ export async function requestResearchGrounding(params: {
   return {
     summary: result.summary,
     modelUsed: result.modelUsed,
-    groundingSources: result.groundingSources || [],
+    groundingSources: safeGroundingSources(result.groundingSources),
     webSearchQueries: result.webSearchQueries || []
   };
 }
@@ -161,12 +163,7 @@ export async function requestProjectHealthReview(params: {
   decisions: any[];
   experiments: any[];
 }): Promise<ProjectHealthReview> {
-  const headers = await buildAuthHeaders();
-  const response = await fetch('/api/gemini/health-assessment', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(params),
-  });
+  const response = await authenticatedPost('/api/gemini/health-assessment', params);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -190,12 +187,7 @@ export async function requestSuggestedTasks(params: {
   objective?: string;
   existingTasks: Task[];
 }): Promise<Array<{ title: string; description: string; priority: 'LOW' | 'MEDIUM' | 'HIGH'; phase: string }>> {
-  const headers = await buildAuthHeaders();
-  const response = await fetch('/api/gemini/suggest-tasks', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(params),
-  });
+  const response = await authenticatedPost('/api/gemini/suggest-tasks', params);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -205,4 +197,3 @@ export async function requestSuggestedTasks(params: {
   const result = await response.json();
   return result.tasks || [];
 }
-

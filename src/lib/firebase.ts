@@ -13,16 +13,9 @@ import {
   Firestore,
   initializeFirestore
 } from 'firebase/firestore';
-import firebaseConfigData from '../../firebase-applet-config.json';
+import { buildFirebaseWebConfig } from './firebaseConfig';
 
-const firebaseConfig = {
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string) || firebaseConfigData.apiKey,
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || firebaseConfigData.authDomain,
-  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || firebaseConfigData.projectId,
-  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || firebaseConfigData.storageBucket,
-  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || firebaseConfigData.messagingSenderId,
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || firebaseConfigData.appId,
-};
+const firebaseConfig = buildFirebaseWebConfig(import.meta.env);
 
 // Initialize Firebase App
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -35,14 +28,16 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 // Initialize Firestore with custom databaseId if configured
 let firestoreInstance: Firestore;
 try {
-  if (firebaseConfigData.firestoreDatabaseId && firebaseConfigData.firestoreDatabaseId.trim() !== '') {
-    firestoreInstance = initializeFirestore(app, {}, firebaseConfigData.firestoreDatabaseId);
+  const databaseId = (import.meta.env.VITE_FIREBASE_DATABASE_ID as string | undefined)?.trim();
+  if (databaseId) {
+    firestoreInstance = initializeFirestore(app, {}, databaseId);
   } else {
     firestoreInstance = getFirestore(app);
   }
 } catch (e) {
   // If already initialized
-  firestoreInstance = getFirestore(app, firebaseConfigData.firestoreDatabaseId || undefined);
+  const databaseId = (import.meta.env.VITE_FIREBASE_DATABASE_ID as string | undefined)?.trim();
+  firestoreInstance = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 }
 
 export const db = firestoreInstance;

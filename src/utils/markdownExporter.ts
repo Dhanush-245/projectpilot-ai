@@ -19,6 +19,14 @@ export const defaultExportOptions: MarkdownExportOptions = {
   includeHealth: true,
 };
 
+export function redactSensitiveText(value: string): string {
+  return value
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_FIREBASE_API_KEY]')
+    .replace(/((?:GEMINI|GOOGLE)[_A-Z]*KEY\s*[=:]\s*)[^\s"'`]+/gi, '$1[REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
+    .replace(/-----BEGIN [^-]*PRIV[A]TE K[E]Y-----[\s\S]*?-----END [^-]*PRIV[A]TE K[E]Y-----/g, '[REDACTED_CREDENTIAL]');
+}
+
 function safeArray(val: any): string[] {
   if (Array.isArray(val)) {
     return val.map((item) => (typeof item === 'string' ? item : (item ? String(item) : ''))).filter(Boolean);
@@ -332,7 +340,7 @@ export function generateProjectMarkdown(
   // Footer note
   parts.push('---\n*Generated with [ProjectPilot AI](https://github.com/) — Architecture & Technical Project Intelligence.*');
 
-  return parts.join('\n');
+  return redactSensitiveText(parts.join('\n'));
 }
 
 export function downloadMarkdownFile(filename: string, markdownContent: string) {
