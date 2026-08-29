@@ -3,6 +3,9 @@
 > **Built for the Google Cloud Run AI Challenge**  
 > *Turn ideas into structured architecture, actionable roadmaps, and context-aware intelligence powered by Gemini and Cloud Run.*
 
+- **Live Cloud Run application:** https://projectpilot-ai-446787300680.asia-southeast1.run.app/
+- **Feature walkthrough:** [`demo/projectpilot-final-demo.mp4`](demo/projectpilot-final-demo.mp4)
+
 ---
 
 ## 🌟 Overview & Original Enhancements
