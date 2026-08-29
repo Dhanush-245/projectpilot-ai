@@ -460,7 +460,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     const projectContext = {
       name: activeProject?.name,
       shortDescription: activeProject?.shortDescription,
-      problemBeingSolved: activeProject?.problemBeingSolved,
+      problemBeingSolved:
+        activeProject?.problemBeingSolved ||
+        activeProject?.shortDescription ||
+        activeProject?.name ||
+        'Project objective not specified',
       currentPhase: activeProject?.currentPhase,
       analysis: activeProject?.analysis,
       tasksSummary: {
@@ -483,7 +487,9 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       }))
     };
 
-    const historyPayload = messages.map((m) => ({
+    // Backend accepts a maximum of 10 conversation-history messages.
+    // Keep the most recent messages so the AI retains the latest context.
+    const historyPayload = messages.slice(-10).map((m) => ({
       role: m.role,
       content: m.content
     }));
