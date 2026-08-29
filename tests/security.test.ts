@@ -246,7 +246,7 @@ test('chat validation rejects malformed and oversized history', () => {
 });
 
 test('Gemini configuration uses one verified default and explicit fallbacks only', () => {
-  assert.deepEqual(configuredGeminiModels({} as NodeJS.ProcessEnv), ['gemini-3.7-flash']);
+  assert.deepEqual(configuredGeminiModels({} as NodeJS.ProcessEnv), ['gemini-3.5-flash']);
   assert.deepEqual(configuredGeminiModels({ GEMINI_MODEL: 'primary', GEMINI_FALLBACK_MODELS: 'fallback,primary' } as NodeJS.ProcessEnv), ['primary', 'fallback']);
   assert.throws(() => getGeminiApiKey({} as NodeJS.ProcessEnv), /not configured/i);
   assert.equal(getGeminiApiKey({ GEMINI_API_KEY: 'configured-placeholder' } as NodeJS.ProcessEnv), 'configured-placeholder');

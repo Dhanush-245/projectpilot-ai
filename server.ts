@@ -117,7 +117,7 @@ function getGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey });
 }
 
-const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
 
 export type GeminiErrorCategory =
   | 'INVALID_REQUEST'
