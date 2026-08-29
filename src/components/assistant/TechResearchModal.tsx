@@ -38,6 +38,7 @@ export const TechResearchModal: React.FC<TechResearchModalProps> = ({
     modelUsed?: string;
     groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
     webSearchQueries?: string[];
+    groundingStatus?: 'live' | 'fallback';
   } | null>(null);
 
   if (!isOpen) return null;
@@ -225,6 +226,11 @@ export const TechResearchModal: React.FC<TechResearchModalProps> = ({
 
           {result && (
             <div className="space-y-6 animate-in fade-in">
+              {result.groundingStatus === 'fallback' && (
+                <div className="p-3 rounded-xl bg-amber-950/30 border border-amber-700/40 text-amber-200 text-xs">
+                  Live Google Search quota is currently unavailable. This brief uses Gemini's model knowledge and contains no live web citations.
+                </div>
+              )}
               {/* Actions bar */}
               <div className="flex items-center justify-between pb-3 border-b border-[#222222]">
                 <div className="flex items-center gap-2">

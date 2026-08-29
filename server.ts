@@ -159,6 +159,7 @@ interface GenerateResult {
   modelUsed: string;
   groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
   webSearchQueries?: string[];
+  groundingStatus?: 'live' | 'fallback';
 }
 
 async function generateWithFallback(options: FallbackOptions): Promise<GenerateResult> {
@@ -168,33 +169,39 @@ async function generateWithFallback(options: FallbackOptions): Promise<GenerateR
   let lastCategory: GeminiErrorCategory = 'INTERNAL_ERROR';
 
   for (const model of ladder) {
-    try {
-      const config: any = {};
-      if (options.systemInstruction) {
-        config.systemInstruction = options.systemInstruction;
-      }
-      if (options.responseMimeType) {
-        config.responseMimeType = options.responseMimeType;
-      }
-      if (options.responseSchema) {
-        config.responseSchema = options.responseSchema;
-      }
-      if (typeof options.temperature === 'number') {
-        config.temperature = options.temperature;
-      }
+    const searchModes = options.enableGoogleSearch ? [true, false] : [false];
+    for (const useGoogleSearch of searchModes) {
+      try {
+        const config: any = {};
+        if (options.systemInstruction) {
+          config.systemInstruction = options.systemInstruction;
+        }
+        if (options.enableGoogleSearch && !useGoogleSearch) {
+          config.systemInstruction = `${config.systemInstruction || ''}
+Live Google Search is unavailable for this request. Use only model knowledge, explicitly disclose that limitation, and never invent web citations, URLs, current versions, or claims of live verification.`;
+        }
+        if (options.responseMimeType) {
+          config.responseMimeType = options.responseMimeType;
+        }
+        if (options.responseSchema) {
+          config.responseSchema = options.responseSchema;
+        }
+        if (typeof options.temperature === 'number') {
+          config.temperature = options.temperature;
+        }
 
-      // Enable Google Search Grounding tool when requested
-      if (options.enableGoogleSearch) {
-        config.tools = [{ googleSearch: {} }];
-      }
+        // Enable Google Search Grounding tool when requested and available.
+        if (useGoogleSearch) {
+          config.tools = [{ googleSearch: {} }];
+        }
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: options.prompt,
-        config
-      });
+        const response = await ai.models.generateContent({
+          model,
+          contents: options.prompt,
+          config
+        });
 
-      if (response && response.text) {
+        if (response && response.text) {
         // Extract search grounding metadata if available
         let groundingSources: Array<{ title?: string; url?: string; snippet?: string }> | undefined;
         let webSearchQueries: string[] | undefined;
@@ -222,22 +229,34 @@ async function generateWithFallback(options: FallbackOptions): Promise<GenerateR
           }
         }
 
-        return {
-          text: response.text,
-          modelUsed: model,
-          groundingSources,
-          webSearchQueries
-        };
+          return {
+            text: response.text,
+            modelUsed: model,
+            groundingSources,
+            webSearchQueries,
+            groundingStatus: options.enableGoogleSearch
+              ? (useGoogleSearch ? 'live' : 'fallback')
+              : undefined
+          };
+        }
+      } catch (err: any) {
+        const diagnostic = classifyGeminiError(err);
+        lastCategory = diagnostic.category;
+        console.warn('[Gemini] request failed', {
+          endpoint: options.endpoint,
+          model,
+          status: diagnostic.status,
+          category: diagnostic.category,
+          googleSearch: useGoogleSearch
+        });
+
+        // Search grounding has a separate quota and may be unavailable on the
+        // free tier. Only retry without the tool for that specific condition;
+        // authentication, validation, and other provider failures still fail.
+        if (!(useGoogleSearch && diagnostic.category === 'RATE_LIMITED')) {
+          break;
+        }
       }
-    } catch (err: any) {
-      const diagnostic = classifyGeminiError(err);
-      lastCategory = diagnostic.category;
-      console.warn('[Gemini] request failed', {
-        endpoint: options.endpoint,
-        model,
-        status: diagnostic.status,
-        category: diagnostic.category
-      });
     }
   }
 
@@ -740,7 +759,8 @@ Provide a helpful, direct, and project-grounded response.`;
       reply: result.text,
       modelUsed: result.modelUsed,
       groundingSources: result.groundingSources || [],
-      webSearchQueries: result.webSearchQueries || []
+      webSearchQueries: result.webSearchQueries || [],
+      groundingStatus: result.groundingStatus || 'fallback'
     });
   } catch (error: any) {
     reportEndpointError('chat', error);
@@ -781,7 +801,7 @@ Tech Stack Context: ${JSON.stringify(projectContext?.analysis?.suggestedTechStac
 ${query}
 </UNTRUSTED_RESEARCH_QUERY>
 
-Provide a comprehensive, up-to-date research brief using Google Search grounding. Include:
+Provide a comprehensive research brief. Use and cite Google Search grounding only when the tool is available. Include:
 1. Executive Summary & Latest State of the Art
 2. Technical Comparison / Key Findings
 3. Concrete Recommendations for this project
@@ -800,7 +820,8 @@ Provide a comprehensive, up-to-date research brief using Google Search grounding
       summary: result.text,
       modelUsed: result.modelUsed,
       groundingSources: result.groundingSources || [],
-      webSearchQueries: result.webSearchQueries || []
+      webSearchQueries: result.webSearchQueries || [],
+      groundingStatus: result.groundingStatus || 'fallback'
     });
   } catch (error: any) {
     reportEndpointError('research', error);

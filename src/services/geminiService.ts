@@ -96,6 +96,7 @@ export interface ChatResponseResult {
   modelUsed?: string;
   groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
   webSearchQueries?: string[];
+  groundingStatus?: 'live' | 'fallback';
 }
 
 export async function sendProjectChatMessage(params: {
@@ -122,7 +123,8 @@ export async function sendProjectChatMessage(params: {
     reply: result.reply,
     modelUsed: result.modelUsed,
     groundingSources: safeGroundingSources(result.groundingSources),
-    webSearchQueries: result.webSearchQueries || []
+    webSearchQueries: result.webSearchQueries || [],
+    groundingStatus: result.groundingStatus === 'live' ? 'live' : 'fallback'
   };
 }
 
@@ -134,6 +136,7 @@ export async function requestResearchGrounding(params: {
   modelUsed?: string;
   groundingSources?: Array<{ title?: string; url?: string; snippet?: string }>;
   webSearchQueries?: string[];
+  groundingStatus?: 'live' | 'fallback';
 }> {
   const response = await authenticatedPost('/api/gemini/research', params);
 
@@ -151,7 +154,8 @@ export async function requestResearchGrounding(params: {
     summary: result.summary,
     modelUsed: result.modelUsed,
     groundingSources: safeGroundingSources(result.groundingSources),
-    webSearchQueries: result.webSearchQueries || []
+    webSearchQueries: result.webSearchQueries || [],
+    groundingStatus: result.groundingStatus === 'live' ? 'live' : 'fallback'
   };
 }
 

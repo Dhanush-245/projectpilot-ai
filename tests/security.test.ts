@@ -263,6 +263,15 @@ test('Gemini HTTP failures are categorized without raw provider details', () => 
   assert.throws(() => parseGeminiJson('not-json'));
 });
 
+test('search grounding quota fallback is bounded and disclosed', async () => {
+  const serverSource = await readFile(new URL('../server.ts', import.meta.url), 'utf8');
+  const researchUi = await readFile(new URL('../src/components/assistant/TechResearchModal.tsx', import.meta.url), 'utf8');
+  assert.match(serverSource, /useGoogleSearch\s*&&\s*diagnostic\.category\s*===\s*'RATE_LIMITED'/);
+  assert.match(serverSource, /never invent web citations, URLs, current versions/);
+  assert.match(serverSource, /groundingStatus:\s*result\.groundingStatus\s*\|\|\s*'fallback'/);
+  assert.match(researchUi, /contains no live web citations/);
+});
+
 test('Cloud Build passes every required Firebase build argument without server secrets', async () => {
   const config = await readFile(new URL('../cloudbuild.yaml', import.meta.url), 'utf8');
   for (const name of [
