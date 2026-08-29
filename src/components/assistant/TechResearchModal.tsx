@@ -92,7 +92,7 @@ export const TechResearchModal: React.FC<TechResearchModalProps> = ({
   const handleSaveAsNote = async () => {
     if (!result || !activeProject) return;
     try {
-      let noteContent = `${result.summary}\n\n---\n**Grounded via Google Search (${result.modelUsed || 'Gemini 3.5 Flash'})**\n`;
+      let noteContent = `${result.summary}\n\n---\n**Grounded via Google Search (${result.modelUsed || 'Gemini'})**\n`;
       if (result.groundingSources && result.groundingSources.length > 0) {
         noteContent += `\n**Sources:**\n` + result.groundingSources.map(s => `- [${s.title || 'Link'}](${s.url})`).join('\n');
       }
@@ -101,7 +101,7 @@ export const TechResearchModal: React.FC<TechResearchModalProps> = ({
         title: `Research: ${query.slice(0, 40)}`,
         content: noteContent,
         category: 'RESEARCH',
-        tags: ['GoogleSearch', 'Gemini-3.5-Flash', 'Research']
+        tags: ['GoogleSearch', 'Gemini', 'Research']
       });
 
       setSavedAsNote(true);
@@ -229,7 +229,7 @@ export const TechResearchModal: React.FC<TechResearchModalProps> = ({
               <div className="flex items-center justify-between pb-3 border-b border-[#222222]">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono text-[#888888]">
-                    Model: <strong className="text-white">{result.modelUsed || 'gemini-3.5-flash'}</strong>
+                    Model: <strong className="text-white">{result.modelUsed || 'Gemini'}</strong>
                   </span>
                 </div>
                 <div className="flex items-center gap-2">

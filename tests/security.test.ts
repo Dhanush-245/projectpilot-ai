@@ -13,6 +13,7 @@ import {
   getGeminiApiKey,
   isRecord,
   validateChatRequest,
+  validProjectContext,
   validRecordArray,
   validString,
 } from '../server';
@@ -184,7 +185,7 @@ test('grounding links reject unsafe URL schemes', () => {
 test('chat validation accepts optional context and bounded history', () => {
   const base = { message: 'Help with this project' };
   assert.equal(validateChatRequest(base), null);
-  assert.equal(validateChatRequest({ ...base, projectContext: {} }), null);
+  assert.match(validateChatRequest({ ...base, projectContext: {} }) || '', /malformed/i);
   assert.equal(validateChatRequest({ ...base, projectContext: { name: 'Project' }, conversationHistory: [] }), null);
   assert.equal(validateChatRequest({
     ...base,
@@ -196,6 +197,43 @@ test('chat validation accepts optional context and bounded history', () => {
     },
     conversationHistory: Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: `Message ${index}` })),
   }), null);
+});
+
+test('project context accepts minimal, complete, and missing optional fields', () => {
+  assert.equal(validProjectContext({ name: 'Minimal project' }), true);
+  assert.equal(validProjectContext({ name: 'Pending analysis', analysis: null }), true);
+  assert.equal(validProjectContext({
+    name: 'Complete project',
+    shortDescription: 'A complete context',
+    problemBeingSolved: 'A real problem',
+    currentPhase: 'BUILD',
+    tasksSummary: { total: 4, completed: 1, inProgress: 1, todo: 2 },
+    analysis: {
+      keyObjectives: ['Ship safely'],
+      suggestedTechStack: { frontend: 'React', backend: 'Express', other: ['Firebase'] },
+    },
+    recentNotes: [{ title: 'Note', content: 'Content' }],
+    decisions: [{ decision: 'Use Firebase', reasoning: 'Owner isolation', status: 'ACCEPTED' }],
+    experiments: [{ name: 'Load test', hypothesis: 'Fast enough', result: 'Pending' }],
+  }), true);
+});
+
+test('project context rejects missing required fields and invalid or oversized fields', () => {
+  assert.equal(validProjectContext({}), false);
+  assert.equal(validProjectContext({ name: '' }), false);
+  assert.equal(validProjectContext({ name: 42 }), false);
+  assert.equal(validProjectContext({ name: 'x'.repeat(151) }), false);
+  assert.equal(validProjectContext({ name: 'Project', shortDescription: 'x'.repeat(501) }), false);
+  assert.equal(validProjectContext({ name: 'Project', tasksSummary: { total: -1 } }), false);
+});
+
+test('project context rejects malformed nested objects without weakening optional fields', () => {
+  assert.equal(validProjectContext({ name: 'Project', analysis: [] }), false);
+  assert.equal(validProjectContext({ name: 'Project', analysis: { keyObjectives: [42] } }), false);
+  assert.equal(validProjectContext({ name: 'Project', analysis: { suggestedTechStack: { frontend: { unsafe: true } } } }), false);
+  assert.equal(validProjectContext({ name: 'Project', recentNotes: [{ title: 42, content: 'Content' }] }), false);
+  assert.equal(validProjectContext({ name: 'Project', decisions: [{}] }), false);
+  assert.equal(validProjectContext({ name: 'Project', experiments: 'not-an-array' }), false);
 });
 
 test('chat validation rejects malformed and oversized history', () => {

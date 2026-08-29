@@ -49,9 +49,9 @@ function validStringArray(value: unknown, maxItems: number, maxLength: number): 
     value.every((item) => validString(item, maxLength, true)));
 }
 
-function validProjectContext(value: unknown): boolean {
+export function validProjectContext(value: unknown): boolean {
   if (value === undefined) return true;
-  if (!isRecord(value) || !validString(value.name, 150) || !validString(value.shortDescription, 500) ||
+  if (!isRecord(value) || !validString(value.name, 150, true) || !validString(value.shortDescription, 500) ||
       !validString(value.problemBeingSolved, 500) || !validString(value.currentPhase, 100)) return false;
   if (value.tasksSummary !== undefined) {
     if (!isRecord(value.tasksSummary) || ['total', 'completed', 'inProgress', 'todo'].some((key) => {
@@ -59,7 +59,9 @@ function validProjectContext(value: unknown): boolean {
       return count !== undefined && (typeof count !== 'number' || !Number.isInteger(count) || count < 0 || count > 100_000);
     })) return false;
   }
-  if (value.analysis !== undefined) {
+  // Firestore-backed projects explicitly store `analysis: null` until analysis
+  // has been generated. Treat null like an omitted optional value.
+  if (value.analysis !== undefined && value.analysis !== null) {
     if (!isRecord(value.analysis) || !validStringArray(value.analysis.keyObjectives, 50, 300)) return false;
     const stack = value.analysis.suggestedTechStack;
     if (stack !== undefined && (!isRecord(stack) || Object.keys(stack).length > 20 ||
@@ -68,11 +70,12 @@ function validProjectContext(value: unknown): boolean {
   }
   if (!validRecordArray(value.recentNotes, 10) || !validRecordArray(value.decisions, 10) ||
       !validRecordArray(value.experiments, 10)) return false;
-  return ((value.recentNotes || []) as JsonRecord[]).every((note) => validString(note.title, 100) && validString(note.content, 500)) &&
-    ((value.decisions || []) as JsonRecord[]).every((decision) => validString(decision.decision, 150) &&
-      validString(decision.reasoning, 300) && validString(decision.status, 30)) &&
-    ((value.experiments || []) as JsonRecord[]).every((experiment) => validString(experiment.name, 100) &&
-      validString(experiment.hypothesis, 300) && validString(experiment.result, 300));
+  return ((value.recentNotes || []) as JsonRecord[]).every((note) =>
+    validString(note.title, 100, true) && validString(note.content, 500, true)) &&
+    ((value.decisions || []) as JsonRecord[]).every((decision) => validString(decision.decision, 150, true) &&
+      validString(decision.reasoning, 300, true) && validString(decision.status, 30, true)) &&
+    ((value.experiments || []) as JsonRecord[]).every((experiment) => validString(experiment.name, 100, true) &&
+      validString(experiment.hypothesis, 300, true) && validString(experiment.result, 300));
 }
 
 export function validateChatRequest(value: unknown): string | null {

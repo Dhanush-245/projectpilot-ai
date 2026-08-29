@@ -466,7 +466,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         activeProject?.name ||
         'Project objective not specified',
       currentPhase: activeProject?.currentPhase,
-      analysis: activeProject?.analysis,
+      analysis: activeProject?.analysis ?? undefined,
       tasksSummary: {
         total: tasks.length,
         completed: tasks.filter((t) => t.status === 'COMPLETED').length,
